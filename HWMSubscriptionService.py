@@ -20,6 +20,7 @@ import base64
 import ctypes
 import html
 import json
+import re
 import smtplib
 import ssl
 import sys
@@ -44,12 +45,25 @@ SUBJECT_NAMES = {
 
 DEFAULTS = {
     "source": {"host": "", "port": 465, "security": "SSL", "email": "", "username": "", "password": ""},
-    "subscribers": [], "schedule_enabled": False, "schedule_time": "18:00", "last_sent_date": "",
+    "subscribers": [], "schedule_enabled": False, "schedule_time": "18:00:00",
     "title_template": "%date% 作业",
-    "body_template": "<b>%n% %t%，您好。这是今天的作业：</b>\n<hr style='height:1px;border-width:0;color:gray;background-color:gray'><blockquote style='border-left: 3px solid #318CE7; padding-left: 12px; margin-left: 0;'>%hw%</blockquote>\n<div style='text-align: right;'><b>%s% %c%</b></div><hr style='height:2px;border-width:0;color:gray;background-color:gray'><div style='text-align: center;'><small>此邮件由 Homework Manager 推送管理器自动发送，请不要回复。\n%date% %time%</small></div>",
+    "body_template": "<b>%n% %t%，您好。这是今天的作业：</b>\n<hr style='height:1px;border-width:0;color:gray;background-color:gray'><blockquote style='border-left: 3px solid #318CE7; padding-left: 12px; margin-left: 0;'>%hw%</blockquote>\n<div style='text-align: right;'><b>%s% %c%</b></div><hr style='height:2px;border-width:0;color:gray;background-color:gray'><div style='text-align: center;'><small>此邮件由 <a href='https://github.com/AUimpostor/Homework-Manager'>Homework Manager</a> 推送管理器自动发送，请不要回复。\n%date% %time%</small></div>",
 }
 
 _schedule_lock = threading.Lock()
+
+
+def normalize_schedule_time(value):
+    """Return strict 24-hour HH:MM:SS; accept legacy HH:MM as :00."""
+    text = str(value).strip()
+    if re.fullmatch(r"\d{2}:\d{2}", text):
+        text += ":00"
+    if not re.fullmatch(r"\d{2}:\d{2}:\d{2}", text):
+        raise ValueError("定时推送时间请使用 HH:MM:SS 格式（例如 18:30:00）。")
+    try:
+        return datetime.strptime(text, "%H:%M:%S").strftime("%H:%M:%S")
+    except ValueError as error:
+        raise ValueError("定时推送时间无效，请输入有效的 24 小时时间。") from error
 
 class _Blob(ctypes.Structure):
     _fields_ = [("cbData", ctypes.c_ulong), ("pbData", ctypes.POINTER(ctypes.c_ubyte))]
@@ -103,6 +117,12 @@ def load_settings(directory=APP_DIR):
         result["source"] = dict(DEFAULTS["source"], **loaded.get("source", {}))
         result["source"]["password"] = _unprotect(result["source"].get("password", ""))
         result["subscribers"] = loaded.get("subscribers", [])
+        # Discard the legacy daily-send marker; schedules now fire only on exact time matches.
+        result.pop("last_sent_date", None)
+        try:
+            result["schedule_time"] = normalize_schedule_time(result.get("schedule_time", DEFAULTS["schedule_time"]))
+        except ValueError:
+            pass
         return result
     except FileNotFoundError:
         return dict(DEFAULTS, source=dict(DEFAULTS["source"]), subscribers=[])
@@ -110,6 +130,7 @@ def load_settings(directory=APP_DIR):
 def save_settings(settings, directory=APP_DIR):
     path = Path(directory) / SETTINGS_NAME
     value = dict(settings)
+    value.pop("last_sent_date", None)
     value["source"] = dict(settings["source"])
     value["source"]["password"] = _protect(value["source"].get("password", ""))
     temporary = path.with_suffix(".tmp")
@@ -227,20 +248,21 @@ def maybe_send_scheduled(directory=APP_DIR, now=None):
         return
     try:
         settings = load_settings(directory)
-        if not settings.get("schedule_enabled") or settings.get("last_sent_date") == now.date().isoformat():
+        if not settings.get("schedule_enabled"):
             return
         try:
-            hour, minute = map(int, settings.get("schedule_time", "18:00").split(":"))
+            scheduled_time = datetime.strptime(
+                normalize_schedule_time(settings.get("schedule_time", DEFAULTS["schedule_time"])),
+                "%H:%M:%S",
+            ).time()
         except (ValueError, TypeError):
             return
-        if now.hour < hour or (now.hour == hour and now.minute < minute):
+        if (now.hour, now.minute, now.second) != (
+            scheduled_time.hour, scheduled_time.minute, scheduled_time.second
+        ):
             return
         send_push(settings, directory)
-        settings["last_sent_date"] = now.date().isoformat()
-        save_settings(settings, directory)
         with (Path(directory) / "push.log").open("a", encoding="utf-8") as log:
             log.write("{} scheduled push sent to {} subscribers\n".format(now.isoformat(timespec="seconds"), len(settings.get("subscribers", []))))
     finally:
         _schedule_lock.release()
-
-

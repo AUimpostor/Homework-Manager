@@ -240,7 +240,10 @@ def main():
                         ))
                 except OSError:
                     pass
-            time.sleep(20)
+            # Check at wall-clock second boundaries so HH:MM:SS schedules do not wait
+            # for the old 20-second polling interval to elapse.
+            current = datetime.now()
+            time.sleep(max(0.01, 1.0 - current.microsecond / 1_000_000))
 
     threading.Thread(target=schedule_loop, daemon=True).start()
 
