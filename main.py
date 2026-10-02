@@ -38,6 +38,7 @@ from HWMRuntime import (
     enable_touch_keyboard,
     request_shutdown,
     set_window_icon,
+    set_window_size_percent,
     wait_for_main_action,
 )
 from HWMSubscriptionService import maybe_send_scheduled
@@ -48,13 +49,7 @@ APPLICATION_DIR = (
     if getattr(sys, "frozen", False)
     else Path(__file__).resolve().parent
 )
-RESOURCE_DIR = (
-    APPLICATION_DIR
-    if (APPLICATION_DIR / "config.json").exists() or (APPLICATION_DIR / "homework.json").exists()
-    else APPLICATION_DIR.parent
-    if getattr(sys, "frozen", False)
-    else APPLICATION_DIR
-)
+RESOURCE_DIR = APPLICATION_DIR
 CONFIG_FILE = RESOURCE_DIR / "config.json"
 TRAY_ICON_FILE = (
     Path(getattr(sys, "_MEIPASS", APPLICATION_DIR)) / "hwm.ico"
@@ -129,7 +124,7 @@ def ensure_display_running():
 def load_tray_click_action():
     config = load_config(CONFIG_FILE)
     action = config.get("tray_click_action", "dashboard")
-    return action if action in ("dashboard", "homework_editor") else "dashboard"
+    return action if action in ("dashboard", "homework_editor", "menu") else "dashboard"
 
 
 def show_school_class_prompt():
@@ -143,8 +138,8 @@ def show_school_class_prompt():
     root.title("填写学校和班级")
     root.attributes("-topmost", True)
     root.resizable(False, False)
-    root.geometry("500x320")
     configure_tk_scaling(root)
+    set_window_size_percent(root, 32, 51)
     completed = {"value": False}
     school_var = tk.StringVar(value=str(config.get("school", "")))
     class_var = tk.StringVar(value=str(config.get("class", "")))
@@ -158,8 +153,8 @@ def show_school_class_prompt():
     ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
     ttk.Label(
         outer,
-        text="首次启动请填写学校和班级，之后可在仪表盘中修改。",
-        foreground="#666666",
+        text=" “坐下来，轻松一下，对屏幕上的选项做一个短暂的浏览。”\n\n 首次启动 Homework Manager 需要填写学校和班级，\n      之后可以在仪表盘中修改这两项。\n\n 在您点击“保存并继续”后，在使用过程中，\n      Homework Manager 会在自身所在目录建立数个 JSON 文件用于存储数据，\n      请不要轻易删除或分享这些 JSON 文件！\n\n 本程序所有数据（含作业内容、订阅账户邮箱、SMTP 凭据等），\n      均保存在程序所在目录的本地文件中，不会上传到任何服务器。\n      SMTP 密码使用 Windows DPAPI 加密后存储。\n\n 订阅账户信息由使用者自行录入并负责取得对方同意后使用。\n 推送邮件通过配置中的 SMTP 服务器直接发送。",
+        foreground="#000000",
         font=("Microsoft YaHei UI", 9),
     ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 18))
     ttk.Label(outer, text="学校").grid(row=2, column=0, sticky="w", padx=(0, 14), pady=7)
@@ -174,7 +169,7 @@ def show_school_class_prompt():
         school = school_var.get().strip()
         class_name = class_var.get().strip()
         if not school or not class_name:
-            messagebox.showwarning("信息不完整", "学校和班级都必须填写。", parent=root)
+            messagebox.showwarning("信息不完整", "学校和班级均必填项。", parent=root)
             return
         config["school"] = school
         config["class"] = class_name
@@ -240,8 +235,6 @@ def main():
                         ))
                 except OSError:
                     pass
-            # Check at wall-clock second boundaries so HH:MM:SS schedules do not wait
-            # for the old 20-second polling interval to elapse.
             current = datetime.now()
             time.sleep(max(0.01, 1.0 - current.microsecond / 1_000_000))
 
@@ -268,18 +261,34 @@ def main():
     def on_icon_stop(_icon):
         close_main_control_events(main_control_events)
 
-    click_action = open_dashboard if tray_click_action == "dashboard" else open_homework_editor
+    default_dashboard = tray_click_action == "dashboard"
+    default_editor = tray_click_action == "homework_editor"
     menu = pystray.Menu(
-        pystray.MenuItem("仪表盘", open_dashboard, default=click_action is open_dashboard),
+        pystray.MenuItem("仪表盘", open_dashboard, default=default_dashboard),
         pystray.MenuItem(
             "项目编辑器",
             open_homework_editor,
-            default=click_action is open_homework_editor,
+            default=default_editor,
         ),
         pystray.MenuItem("预览项目", preview_homework),
         pystray.MenuItem("退出 HWM", exit_hwm),
     )
     icon = pystray.Icon("HomeworkManager", create_tray_image(), "Homework Manager", menu)
+
+    if tray_click_action == "menu":
+        try:
+            from pystray._util import win32 as _pystray_win32
+            original_notify = icon._message_handlers[_pystray_win32.WM_NOTIFY]
+
+            def notify_showing_menu(wparam, lparam):
+                if lparam == _pystray_win32.WM_LBUTTONUP:
+                    lparam = _pystray_win32.WM_RBUTTONUP
+                return original_notify(wparam, lparam)
+
+            icon._message_handlers[_pystray_win32.WM_NOTIFY] = notify_showing_menu
+        except (AttributeError, ImportError, KeyError):
+            pass
+
     threading.Thread(target=wait_for_control_action, daemon=True).start()
     icon.run()
     on_icon_stop(icon)

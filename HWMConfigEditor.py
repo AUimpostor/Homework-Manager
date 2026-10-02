@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tkinter as tk
 import threading
+import webbrowser
 import winreg
 from pathlib import Path
 from tkinter import colorchooser, messagebox, ttk
@@ -76,15 +77,14 @@ SUBJECT_NAMES = {
     "other": "其他",
 }
 INTEGER_FIELDS = (
-    "title_width", "title_length", "title_font_size", "project_font_size",
-    "title_guide_line_width",
+    "title_width_permill", "title_length_permill", "title_font_size", "project_font_size", "secondary_project_font_size",
+    "title_guide_line_width_permill",
     "title_outline_opacity",
-    "dashboard_width_percent", "dashboard_height_percent",
     "editor_width_percent", "editor_height_percent",
     "subject_list_width_percent",
-    "display_range_left", "display_range_right", "display_range_top",
-    "display_range_bottom", "content_padding_x", "content_padding_y",
-    "section_spacing", "scroll_start_delay", "scroll_step_interval",
+    "display_range_left_percent", "display_range_right_percent", "display_range_top_percent",
+    "display_range_bottom_percent", "content_padding_x_permill", "content_padding_y_permill",
+    "section_spacing_permill", "scroll_start_delay", "scroll_step_interval",
     "scroll_end_pause", "restart_pause", "fade_interval",
 )
 FLOAT_FIELDS = ("window_alpha", "scroll_step_size", "fade_step")
@@ -92,6 +92,7 @@ BOOLEAN_FIELDS = ("auto_start_display",)
 TRAY_CLICK_OPTIONS = {
     "dashboard": "仪表盘",
     "homework_editor": "项目编辑器",
+    "menu": "右键菜单",
 }
 SELECT_FIELDS = ("tray_click_action", "title_theme", "title_alignment", "project_alignment")
 TITLE_THEMES = {
@@ -109,42 +110,42 @@ SELECT_OPTIONS = {
     "project_alignment": {"靠左": "靠左", "靠右": "靠右"},
 }
 COLOR_FIELDS = (
-    "title_font_color", "project_font_color", "title_primary_color",
+    "title_font_color", "project_font_color", "secondary_project_font_color", "title_primary_color",
     "title_secondary_color",
 )
 FIELD_LABELS = {
-    "title_width": "标题宽度（pixel）",
-    "title_length": "标题长度（pixel）",
+    "title_width_permill": "标题宽度（‰）",
+    "title_length_permill": "标题高度（‰）",
     "title_font_size": "标题字号（size）",
     "project_font_size": "项目字号（size）",
+    "secondary_project_font_size": "次要项目字号（size）",
     "title_font_color": "标题字体颜色",
     "project_font_color": "项目字体颜色",
+    "secondary_project_font_color": "次要项目字体颜色",
     "title_theme": "标题主题",
     "title_alignment": "标题排版",
     "project_alignment": "项目排版",
     "title_primary_color": "标题主要颜色",
     "title_secondary_color": "标题次要颜色",
-    "title_outline_opacity": "描边透明度（0~100）",
-    "title_guide_line_width": "标题引导线粗（pixel）",
+    "title_outline_opacity": "描边透明度（%）",
+    "title_guide_line_width_permill": "标题引导线粗（‰）",
     "auto_start_display": "开机时自动启动显示器",
     "tray_click_action": "点击系统托盘图标时",
     "school": "学校",
     "class": "班级",
     "project_prefix": "项目前缀",
     "project_suffix": "项目后缀",
-    "dashboard_width_percent": "仪表盘宽度（%）",
-    "dashboard_height_percent": "仪表盘高度（%）",
     "editor_width_percent": "项目编辑器宽度（%）",
     "editor_height_percent": "项目编辑器高度（%）",
     "subject_list_width_percent": "科目列表宽度（%）",
-    "display_range_left": "显示区域：左（%）",
-    "display_range_right": "显示区域：右（%）",
-    "display_range_top": "显示区域：上（%）",
-    "display_range_bottom": "显示区域：下（%）",
+    "display_range_left_percent": "显示区域：左（%）",
+    "display_range_right_percent": "显示区域：右（%）",
+    "display_range_top_percent": "显示区域：上（%）",
+    "display_range_bottom_percent": "显示区域：下（%）",
     "window_alpha": "窗口透明度（0.1~1）",
-    "content_padding_x": "内容水平边距（pixel）",
-    "content_padding_y": "内容垂直边距（pixel）",
-    "section_spacing": "科目间距（pixel）",
+    "content_padding_x_permill": "内容水平边距（‰）",
+    "content_padding_y_permill": "内容垂直边距（‰）",
+    "section_spacing_permill": "科目间距（‰）",
     "scroll_start_delay": "首次滚动前停顿（ms）",
     "scroll_step_interval": "滚动间隔（ms）",
     "scroll_step_size": "每次滚动幅度",
@@ -155,6 +156,8 @@ FIELD_LABELS = {
 }
 COLOR_PRESETS = (
     ("浅灰", "#F5F5F5"),
+    ("灰色", "#808080"),
+    ("深灰色", "#A9A9A9"),
     ("白色", "#FFFFFF"),
     ("深蓝", "#315E7D"),
     ("水蓝", "#4C8DB4"),
@@ -164,42 +167,86 @@ COLOR_PRESETS = (
     ("浅粉", "#FFD6E7"),
 )
 CONFIG_GROUPS = (
-    ("首选项", ("auto_start_display", "tray_click_action")),
-    ("学校信息", ("school", "class")),
     (
-        "格式",
+        "首选项",
         (
-            ("标题",
+            ("", ("auto_start_display", "tray_click_action")),
+            ("信息", ("school", "class")),
+        ),
+    ),
+    (
+        "显示器格式",
+        (
+            (
+                "标题",
                 (
-                    "title_width", "title_length", "title_font_size",
-                    "title_alignment", "title_theme", "title_font_color", "title_primary_color",
-                    "title_secondary_color", "title_outline_opacity", "title_guide_line_width",
+                    "title_width_permill",
+                    "title_length_permill",
+                    "title_font_size",
+                    "title_alignment",
+                    "title_theme",
+                    "title_font_color",
+                    "title_primary_color",
+                    "title_secondary_color",
+                    "title_outline_opacity",
+                    "title_guide_line_width_permill",
                 ),
             ),
             (
                 "项目",
-                ("project_alignment", "project_font_size", "project_font_color", "project_prefix", "project_suffix"),
+                (
+                    "project_alignment",
+                    "project_font_size",
+                    "project_font_color",
+                    "project_prefix",
+                    "project_suffix",
+                ),
+            ),
+            (
+                "次要项目",
+                (
+                    "secondary_project_font_size",
+                    "secondary_project_font_color",
+                ),
             ),
         ),
     ),
     (
         "显示",
         (
-            ("窗口", (
-                "dashboard_width_percent", "dashboard_height_percent",
-                "editor_width_percent", "editor_height_percent",
-                "subject_list_width_percent",
-            )),
-            ("显示器位置", (
-                "display_range_left", "display_range_right", "display_range_top",
-                "display_range_bottom", "window_alpha", "content_padding_x",
-                "content_padding_y", "section_spacing",
-            )),
-            ("动画", (
-                "scroll_start_delay", "scroll_step_interval", "scroll_step_size",
-                "scroll_end_pause", "restart_pause",
-                "fade_interval", "fade_step",
-            )),
+            (
+                "窗口",
+                (
+                    "editor_width_percent",
+                    "editor_height_percent",
+                    "subject_list_width_percent",
+                ),
+            ),
+            (
+                "显示器",
+                (
+                    "display_range_left_percent",
+                    "display_range_right_percent",
+                    "display_range_top_percent",
+                    "display_range_bottom_percent",
+                    "window_alpha",
+                    "content_padding_x_permill",
+                    "content_padding_y_permill",
+                    "section_spacing_permill",
+                ),
+            ),
+            (
+                "动画",
+                (
+                    "scroll_start_delay",
+                    "scroll_step_interval",
+                    "scroll_step_size",
+                    "scroll_end_pause",
+                    "restart_pause",
+                    "fade_interval",
+                    "fade_step",
+                ),
+            ),
         ),
     ),
 )
@@ -267,8 +314,8 @@ class ConfigEditor:
         configure_tk_scaling(root)
         set_window_size_percent(
             root,
-            self.config.get("dashboard_width_percent", 30),
-            self.config.get("dashboard_height_percent", 30),
+            40,
+            40,
             lock_minimum=True,
         )
         self.variables = {}
@@ -333,7 +380,25 @@ class ConfigEditor:
         main.bind("<Configure>", update_scroll_region)
         canvas.bind("<Configure>", update_content_width)
 
-        ttk.Label(main, text="配置 Homework Manager", font=("Microsoft YaHei UI", 15, "bold")).grid(
+        def on_mousewheel(event):
+            widget = getattr(event, "widget", None)
+            if widget is not None and widget.winfo_class() in ("TCombobox", "Listbox"):
+                return
+            if getattr(event, "delta", 0):
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            elif event.num == 4:
+                canvas.yview_scroll(-1, "units")
+            elif event.num == 5:
+                canvas.yview_scroll(1, "units")
+
+        canvas.bind("<MouseWheel>", on_mousewheel)
+        canvas.bind("<Button-4>", on_mousewheel)
+        canvas.bind("<Button-5>", on_mousewheel)
+        self.root.bind_all("<MouseWheel>", on_mousewheel)
+        self.root.bind_all("<Button-4>", on_mousewheel)
+        self.root.bind_all("<Button-5>", on_mousewheel)
+
+        ttk.Label(main, text="配置 Homework Manager", font=("Microsoft YaHei UI", 18, "bold")).grid(
             row=0, column=0, columnspan=2, sticky="w", pady=(0, 14)
         )
         row = 1
@@ -349,7 +414,7 @@ class ConfigEditor:
             ttk.Label(
                 main,
                 text=group_name,
-                font=("Microsoft YaHei UI", 12, "bold"),
+                font=("Microsoft YaHei UI", 14, "bold"),
             ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 2))
             row += 1
             if keys and isinstance(keys[0], tuple) and len(keys[0]) == 2 and isinstance(keys[0][0], str):
@@ -361,7 +426,7 @@ class ConfigEditor:
                     ttk.Label(
                         main,
                         text=subgroup_name,
-                        font=("Microsoft YaHei UI", 10, "bold"),
+                        font=("Microsoft YaHei UI", 11, "bold"),
                     ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(6, 1))
                     row += 1
                 for key in subgroup_keys:
@@ -417,7 +482,7 @@ class ConfigEditor:
                         entry.grid(
                             row=row, column=1, sticky="ew", pady=5
                         )
-                    if key == "title_guide_line_width":
+                    if key == "title_guide_line_width_permill":
                         label_widget = main.grid_slaves(row=row, column=0)[0]
                         self.guide_width_widgets = [label_widget, entry]
                     row += 1
@@ -432,9 +497,21 @@ class ConfigEditor:
             font=("Microsoft YaHei UI", 11, "bold"),
         ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 2))
         row += 1
-        ttk.Label(main, text="Homework Manager 1.4").grid(
-            row=row, column=0, columnspan=2, sticky="w", pady=2
+        about_title = ttk.Frame(main)
+        about_title.grid(row=row, column=0, columnspan=2, sticky="w", pady=2)
+        app_name_label = ttk.Label(
+            about_title,
+            text="Homework Manager",
+            foreground="#1769AA",
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 9, "underline"),
         )
+        app_name_label.pack(side="left")
+        app_name_label.bind(
+            "<Button-1>",
+            lambda _event: webbrowser.open("https://github.com/AUimpostor/Homework-Manager"),
+        )
+        ttk.Label(about_title, text=" v1.5").pack(side="left")
         row += 1
         ttk.Label(
             main,
@@ -518,20 +595,30 @@ class ConfigEditor:
 
     def show_compact_homework(self):
         compact_window = tk.Toplevel(self.root)
-        set_window_icon(compact_window, __file__)
+        set_window_icon(compact_window, __file__, default_only=False)
         compact_window.title("预览项目")
-        compact_window.geometry("420x520")
+        screen_width = compact_window.winfo_screenwidth()
+        screen_height = compact_window.winfo_screenheight()
+        width = min(max(1, screen_width - 40), max(280, round(screen_width * 0.42)), 560)
+        height = min(max(1, screen_height - 80), max(240, round(screen_height * 0.78)), 820)
+        left = max(0, (screen_width - width) // 2)
+        top = max(0, (screen_height - height) // 2)
+        compact_window.geometry("{}x{}+{}+{}".format(width, height, left, top))
+        compact_window.minsize(min(280, width), min(240, height))
+        compact_window.transient(self.root)
+        compact_window.attributes("-topmost", True)
+        compact_window.lift()
+        compact_window.focus_force()
         compact_window.rowconfigure(0, weight=1)
         compact_window.columnconfigure(0, weight=1)
 
-        font_size = tk.IntVar(value=12)
         text_frame = ttk.Frame(compact_window)
         text_frame.grid(row=0, column=0, sticky="nsew")
         text_frame.rowconfigure(0, weight=1)
         text_frame.columnconfigure(0, weight=1)
         text_widget = tk.Text(
             text_frame, wrap=tk.WORD, padx=12, pady=12, state="disabled",
-            font=("Microsoft YaHei UI", font_size.get()),
+            font=("Microsoft YaHei UI", 14),
         )
         text_widget.grid(row=0, column=0, sticky="nsew")
         text_scrollbar = ttk.Scrollbar(
@@ -541,38 +628,30 @@ class ConfigEditor:
         text_widget.configure(yscrollcommand=text_scrollbar.set)
 
         def apply_font_size():
-            text_widget.configure(font=("Microsoft YaHei UI", font_size.get()))
+            try:
+                current_config = self.read_config()
+            except ValueError:
+                current_config = self.config
+            alignment = "left" if current_config.get("display_range_left_percent", 55) < 50 else "right"
+            text_widget.configure(font=("Microsoft YaHei UI", 14))
             text_widget.tag_configure(
                 "subject_heading",
-                font=("Microsoft YaHei UI", font_size.get(), "bold"),
+                font=("Microsoft YaHei UI", 18, "bold"),
+                justify=alignment,
             )
+            text_widget.tag_configure("project", font=("Microsoft YaHei UI", 14), justify=alignment)
+            text_widget.tag_configure("secondary_project", font=("Microsoft YaHei UI", 11), justify=alignment)
+            text_widget.tag_configure("project_spacer", justify=alignment)
 
-        zoom_frame = ttk.Frame(compact_window)
-        zoom_frame.grid(row=1, column=0, sticky="ew", padx=8, pady=(4, 8))
-        ttk.Button(
-            zoom_frame,
-            text="-",
-            width=2,
-            command=lambda: (
-                font_size.set(max(8, font_size.get() - 1)),
-                apply_font_size(),
-            ),
-        ).pack(side="left")
-        ttk.Button(
-            zoom_frame,
-            text="+",
-            width=2,
-            command=lambda: (
-                font_size.set(min(28, font_size.get() + 1)),
-                apply_font_size(),
-            ),
-        ).pack(side="left", padx=(4, 0))
-
+        try:
+            preview_config = self.read_config()
+        except ValueError:
+            preview_config = self.config
         preview_sections = []
         for subject_work in self.data:
             for subject, assignments in subject_work.items():
                 visible_assignments = [
-                    item.get("project", item.get("subject", ""))
+                    item
                     for item in assignments
                     if not item.get("hide", False)
                 ]
@@ -582,18 +661,23 @@ class ConfigEditor:
         text_widget.configure(state="normal")
         if preview_sections:
             for subject_name, visible_assignments in preview_sections:
-                text_widget.insert(tk.END, "{}：\n".format(subject_name), "subject_heading")
-                text_widget.insert(tk.END, "\n".join("  • {}".format(item) for item in visible_assignments) + "\n\n")
+                text_widget.insert(tk.END, "{}\n".format(subject_name), "subject_heading")
+                for item in visible_assignments:
+                    prefix = "" if item.get("ignore_prefix", False) else preview_config.get("project_prefix", "")
+                    suffix = "" if item.get("ignore_suffix", False) else preview_config.get("project_suffix", "")
+                    project = "{}{}{}".format(prefix, item.get("project", ""), suffix)
+                    tag = "secondary_project" if item.get("secondary", False) else "project"
+                    text_widget.insert(tk.END, "  {}\n".format(project), tag)
+                text_widget.insert(tk.END, "\n", "project_spacer")
         else:
             text_widget.insert("1.0", "（无可显示项目）")
-        text_widget.tag_configure(
-            "subject_heading",
-            font=("Microsoft YaHei UI", font_size.get(), "bold"),
-        )
+        apply_font_size()
         text_widget.configure(state="disabled")
 
     def load_values(self):
         for key in DEFAULT_CONFIG:
+            if key not in self.variables:
+                continue
             value = self.config.get(key, DEFAULT_CONFIG[key])
             if key in SELECT_FIELDS:
                 value = SELECT_OPTIONS[key].get(value, SELECT_OPTIONS[key][DEFAULT_CONFIG[key]])
@@ -674,20 +758,25 @@ class ConfigEditor:
             except ValueError as error:
                 raise ValueError("{} 必须是数字".format(FIELD_LABELS[key])) from error
         for key in (
-            "dashboard_width_percent", "dashboard_height_percent",
             "editor_width_percent", "editor_height_percent",
         ):
             if not 10 <= config[key] <= 100:
                 raise ValueError("{} 必须在 10 到 100 之间".format(FIELD_LABELS[key]))
         for key in (
-            "display_range_left", "display_range_right", "display_range_top", "display_range_bottom",
+            "display_range_left_percent", "display_range_right_percent", "display_range_top_percent", "display_range_bottom_percent",
             "subject_list_width_percent",
         ):
             if not 0 <= config[key] <= 100:
                 raise ValueError("{} 必须在 0 到 100 之间".format(FIELD_LABELS[key]))
-        if config["display_range_left"] >= config["display_range_right"]:
+        for key in (
+            "title_width_permill", "title_length_permill", "title_guide_line_width_permill",
+            "content_padding_x_permill", "content_padding_y_permill", "section_spacing_permill",
+        ):
+            if not 1 <= config[key] <= 1000:
+                raise ValueError("{} 必须在 1 到 1000 之间".format(FIELD_LABELS[key]))
+        if config["display_range_left_percent"] >= config["display_range_right_percent"]:
             raise ValueError("显示区域：左必须小于显示区域：右")
-        if config["display_range_top"] >= config["display_range_bottom"]:
+        if config["display_range_top_percent"] >= config["display_range_bottom_percent"]:
             raise ValueError("显示区域：上必须小于显示区域：下")
         if not 0.1 <= config["window_alpha"] <= 1:
             raise ValueError("窗口透明度必须在 0.1 到 1 之间")

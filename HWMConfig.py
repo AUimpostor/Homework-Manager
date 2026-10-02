@@ -21,19 +21,21 @@ from pathlib import Path
 
 
 DEFAULT_CONFIG = {
-    "title_width": 70,
-    "title_length": 30,
-    "title_font_size": 15,
-    "project_font_size": 14,
+    "title_width_permill": 45,
+    "title_length_permill": 45,
+    "title_font_size": 18,
+    "project_font_size": 17,
+    "secondary_project_font_size": 14,
     "title_font_color": "#F5F5F5",
     "project_font_color": "#F5F5F5",
+    "secondary_project_font_color": "#A9A9A9",
     "title_alignment": "靠右",
     "project_alignment": "靠右",
     "title_theme": "默认",
     "title_primary_color": "#315E7D",
     "title_secondary_color": "#4C8DB4",
     "title_outline_opacity": 80,
-    "title_guide_line_width": 10,
+    "title_guide_line_width_permill": 10,
     "auto_start_display": False,
     "tray_click_action": "dashboard",
     "school": "",
@@ -45,14 +47,14 @@ DEFAULT_CONFIG = {
     "editor_width_percent": 50,
     "editor_height_percent": 50,
     "subject_list_width_percent": 5,
-    "display_range_left": 55,
-    "display_range_right": 100,
-    "display_range_top": 2,
-    "display_range_bottom": 70,
+    "display_range_left_percent": 55,
+    "display_range_right_percent": 100,
+    "display_range_top_percent": 2,
+    "display_range_bottom_percent": 70,
     "window_alpha": 0.9,
-    "content_padding_x": 18,
-    "content_padding_y": 12,
-    "section_spacing": 14,
+    "content_padding_x_permill": 18,
+    "content_padding_y_permill": 12,
+    "section_spacing_permill": 12,
     "scroll_start_delay": 1200,
     "scroll_step_interval": 120,
     "scroll_step_size": 0.001,
@@ -61,11 +63,22 @@ DEFAULT_CONFIG = {
     "fade_interval": 30,
     "fade_step": 0.03,
 }
+COLOR_PRESETS = (
+    ("浅灰色", "#F5F5F5"),
+    ("灰色", "#808080"),
+    ("深灰色", "#A9A9A9"),
+    ("白色", "#FFFFFF"),
+    ("深蓝色", "#315E7D"),
+    ("蓝色", "#4C8DB4"),
+    ("浅蓝色", "#CFE8FF"),
+    ("浅黄色", "#FFF2A8"),
+    ("浅绿色", "#C8F7C5"),
+    ("浅粉色", "#FFD6E7"),
+)
 DEFAULT_SUBJECTS = (
     "chinese", "maths", "english", "history", "politics", "physics",
     "chemistry", "biology", "geography", "it", "pe", "art", "other",
 )
-LEGACY_COLOR_THEMES = {"海洋青", "森林绿", "日落橙", "紫藤", "玫瑰", "石墨", "黑板绿"}
 
 
 def default_document():
@@ -73,6 +86,19 @@ def default_document():
         {"config": DEFAULT_CONFIG.copy()},
         {"data": [{subject: []} for subject in DEFAULT_SUBJECTS]},
     ]
+
+
+def _write_default_config(config_file):
+    """Write a fresh config file using the built-in defaults."""
+    document = default_document()
+    path = Path(config_file)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as target:
+            json.dump({"config": document[0]["config"]}, target, ensure_ascii=False, indent=4)
+            target.write("\n")
+    except OSError:
+        pass
 
 
 def load_config_document(config_file):
@@ -95,8 +121,22 @@ def load_config_document(config_file):
                 config_item = item.get("config") if isinstance(item.get("config"), dict) else item
             if isinstance(config_item, dict):
                 config.update(config_item)
-                if config.get("title_theme") in LEGACY_COLOR_THEMES:
-                    config["title_theme"] = "默认"
+                for old_key, new_key in (
+                    ("title_width", "title_width_permill"),
+                    ("title_length", "title_length_permill"),
+                    ("title_guide_line_width", "title_guide_line_width_permill"),
+                    ("content_padding_x", "content_padding_x_permill"),
+                    ("content_padding_y", "content_padding_y_permill"),
+                    ("section_spacing", "section_spacing_permill"),
+                    ("subject_list_width_percent", "subject_list_width_percent"),
+                    ("display_range_left", "display_range_left_percent"),
+                    ("display_range_right", "display_range_right_percent"),
+                    ("display_range_top", "display_range_top_percent"),
+                    ("display_range_bottom", "display_range_bottom_percent"),
+                ):
+                    if new_key not in config_item and old_key in config_item:
+                        config[new_key] = config_item[old_key]
+                    config.pop(old_key, None)
                 if "title_primary_color" not in config_item and "title_background_color" in config_item:
                     config["title_primary_color"] = config_item["title_background_color"]
                 if "title_secondary_color" not in config_item and "title_guide_line_color" in config_item:
@@ -119,12 +159,11 @@ def load_config_document(config_file):
             if not has_project_font_color:
                 config["project_font_color"] = legacy_font_color
         return config, data
+    except FileNotFoundError:
+        return DEFAULT_CONFIG.copy(), default_document()[1]["data"]
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        document = default_document()
-        with Path(config_file).open("w", encoding="utf-8") as target:
-            json.dump({"config": document[0]["config"]}, target, ensure_ascii=False, indent=4)
-            target.write("\n")
-        return DEFAULT_CONFIG.copy(), document[1]["data"]
+        _write_default_config(config_file)
+        return DEFAULT_CONFIG.copy(), default_document()[1]["data"]
 
 
 def load_config(config_file):
@@ -134,6 +173,7 @@ def load_config(config_file):
 
 def save_config(config_file, config):
     path = Path(config_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".{}.tmp".format(uuid.uuid4().hex))
     with temporary.open("w", encoding="utf-8") as target:
         json.dump({"config": config}, target, ensure_ascii=False, indent=4)

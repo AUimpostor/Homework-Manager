@@ -75,14 +75,17 @@ def set_window_size_percent(window, width_percent, height_percent, lock_minimum=
         window.minsize(width, height)
 
 
-def set_window_icon(window, module_file):
+def set_window_icon(window, module_file, default_only=True):
     if getattr(sys, "frozen", False):
         icon_path = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent)) / "hwm.ico"
     else:
         icon_path = Path(module_file).resolve().parent / "hwm.ico"
     try:
         if icon_path.is_file():
-            window.iconbitmap(default=str(icon_path))
+            if default_only:
+                window.iconbitmap(default=str(icon_path))
+            else:
+                window.iconbitmap(str(icon_path))
     except (OSError, RuntimeError):
         pass
 
@@ -92,8 +95,8 @@ def enable_touch_keyboard(window):
         return
 
     user32 = ctypes.windll.user32
-    digitizer = user32.GetSystemMetrics(94)  # SM_DIGITIZER
-    if not (digitizer & 0x80 and digitizer & 0x03):  # NID_READY + touch device
+    digitizer = user32.GetSystemMetrics(94)
+    if not (digitizer & 0x80 and digitizer & 0x03):
         return
 
     get_extra_info = user32.GetMessageExtraInfo
@@ -112,8 +115,6 @@ def enable_touch_keyboard(window):
     last_launch = {"time": 0.0}
 
     def on_pointer_press(event):
-        # Windows marks touch-synthesized mouse messages with this signature
-        # and sets bit 7; ordinary mouse and keyboard activity never qualifies.
         info = int(get_extra_info())
         if (info & 0xFFFFFF00) != 0xFF515700 or not (info & 0x80):
             return

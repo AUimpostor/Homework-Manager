@@ -60,7 +60,6 @@ Copy-Item (Join-Path $TkRuntimeDir "tcl-temp\tcl_library\*") `
 Copy-Item (Join-Path $TkRuntimeDir "tk-temp\tk_library\*") `
     (Join-Path $TkRuntimeDir "_tk_data") -Recurse -Force
 
-# Stage notices as inert PyInstaller data. Application code does not load or display them.
 Remove-Item $LicenseBundleDir -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path `
     $LicenseBundleDir, `
@@ -87,7 +86,7 @@ Remove-Item $OutputDir -Recurse -Force -ErrorAction SilentlyContinue
 $PyInstallerArguments = @(
     "--noconfirm",
     "--clean",
-    "--onefile",
+    "--onedir",
     "--windowed",
     "--icon", (Join-Path $ProjectDir "hwm.ico"),
     "--add-data", "$(Join-Path $ProjectDir 'hwm.ico');.",
@@ -110,18 +109,18 @@ Write-Host "Building Homework Manager.exe..."
 $BuildLog = Join-Path $ProjectDir "build.log"
 $PreviousErrorActionPreference = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
-& $PythonCommand.Source -m PyInstaller @PyInstallerArguments *>&1 | Tee-Object -FilePath $BuildLog
+& $PythonCommand.Source -m PyInstaller @PyInstallerArguments 2>&1 |
+    ForEach-Object {
+        if ($_ -is [System.Management.Automation.ErrorRecord]) {
+            $_.ToString()
+        } else {
+            $_
+        }
+    } | Tee-Object -FilePath $BuildLog
 $PyInstallerExitCode = $LASTEXITCODE
 $ErrorActionPreference = $PreviousErrorActionPreference
 if ($PyInstallerExitCode -ne 0) {
     throw "PyInstaller failed. See: $BuildLog"
-}
-
-if (Test-Path (Join-Path $ProjectDir "config.json")) {
-    Copy-Item (Join-Path $ProjectDir "config.json") $OutputDir -Force
-}
-if (Test-Path (Join-Path $ProjectDir "homework.json")) {
-Copy-Item (Join-Path $ProjectDir "homework.json") $OutputDir -Force
 }
 
 $Executable = Join-Path $OutputDir "Homework Manager.exe"
@@ -137,5 +136,3 @@ Write-Host ""
 Write-Host "Build completed: $Executable" -ForegroundColor Green
 Write-Host "Config file: $(Join-Path $OutputDir 'config.json')"
 Write-Host "Homework file: $(Join-Path $OutputDir 'homework.json')"
-
-

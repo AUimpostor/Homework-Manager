@@ -18,6 +18,7 @@
 import json
 import threading
 import tkinter as tk
+from datetime import datetime
 from tkinter import messagebox, ttk
 
 from HWMRuntime import (
@@ -33,7 +34,6 @@ from HWMSubscriptionService import (
     DEFAULTS,
     check_smtp_connection,
     load_settings,
-    normalize_schedule_time,
     save_settings,
     send_push,
 )
@@ -106,8 +106,8 @@ class SubscriptionManager:
         self.listbox.configure(yscrollcommand=scrollbar.set)
         actions = ttk.Frame(accounts); actions.grid(row=1, column=0, sticky="ew")
         ttk.Button(actions, text="添加账户...", command=self._add_account).pack(side="left")
-        ttk.Button(actions, text="编辑选中账户...", command=self._edit_account).pack(side="left", padx=8)
-        ttk.Button(actions, text="删除选中账户", command=self._delete).pack(side="left")
+        ttk.Button(actions, text="编辑...", command=self._edit_account).pack(side="left", padx=8)
+        ttk.Button(actions, text="删除", command=self._delete).pack(side="left")
 
         right = ttk.Frame(frame); right.grid(row=1, column=1, rowspan=2, sticky="nsew")
         right.columnconfigure(0, weight=1); right.rowconfigure(1, weight=1)
@@ -125,9 +125,9 @@ class SubscriptionManager:
         schedule.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         self.enabled = tk.BooleanVar()
         ttk.Checkbutton(schedule, text="每日推送（仅 HWM 运行时）", variable=self.enabled).grid(row=0, column=0, columnspan=3, sticky="w")
-        self.time_var = tk.StringVar(value="18:00:00")
-        ttk.Label(schedule, text="时间（24 小时制 HH:MM:SS）").grid(row=1, column=0, sticky="w", pady=4)
-        ttk.Entry(schedule, textvariable=self.time_var, width=12).grid(row=1, column=1, sticky="w", pady=4)
+        self.time_var = tk.StringVar(value="18:00")
+        ttk.Label(schedule, text="时间（24 小时制）").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Entry(schedule, textvariable=self.time_var, width=10).grid(row=1, column=1, sticky="w", pady=4)
         ttk.Button(schedule, text="保存定时设置", command=self._save_schedule).grid(row=1, column=2, padx=(8, 0))
         bottom = ttk.Frame(frame)
         bottom.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
@@ -139,11 +139,7 @@ class SubscriptionManager:
         for key, var in self.vars.items(): var.set(str(s.get(key, "")))
         self.security.set(s.get("security", "SSL"))
         self.enabled.set(bool(self.settings.get("schedule_enabled")))
-        try:
-            saved_schedule_time = normalize_schedule_time(self.settings.get("schedule_time", "18:00:00"))
-        except ValueError:
-            saved_schedule_time = str(self.settings.get("schedule_time", "18:00:00"))
-        self.time_var.set(saved_schedule_time)
+        self.time_var.set(self.settings.get("schedule_time", "18:00"))
         self.title_text.delete("1.0", tk.END)
         self.title_text.insert("1.0", self.settings.get("title_template", DEFAULTS["title_template"]))
         self.body_text.delete("1.0", tk.END)
@@ -281,14 +277,12 @@ class SubscriptionManager:
     def _save_schedule(self):
         try:
             schedule_time = self.time_var.get().strip()
-            normalized_time = normalize_schedule_time(schedule_time)
-            if normalized_time != schedule_time:
-                raise ValueError("请精确填写到秒，格式为 HH:MM:SS（例如 18:30:00）。")
+            datetime.strptime(schedule_time, "%H:%M")
             enabled = self.enabled.get()
             if enabled and (not self.settings.get("schedule_enabled") or self.settings.get("schedule_time") != schedule_time):
                 if not messagebox.askyesno("确认定时推送", "确认每天 {} 向所有订阅账户发送推送邮件？\n仅当 HWM 正在运行时执行。".format(schedule_time), parent=self.root): return
             self.settings["schedule_enabled"] = enabled
-            self.settings["schedule_time"] = normalized_time
+            self.settings["schedule_time"] = schedule_time
             save_settings(self.settings); self.status.set("定时推送设置已保存")
         except (OSError, ValueError) as error: messagebox.showerror("保存失败", str(error), parent=self.root)
 

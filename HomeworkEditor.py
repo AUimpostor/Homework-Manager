@@ -57,7 +57,7 @@ SUBJECT_NAMES = {
     "chemistry": "化学",
     "biology": "生物",
     "geography": "地理",
-    "it": "信息技术",
+    "it": "信息",
     "pe": "体育",
     "art": "美术",
     "other": "其他",
@@ -95,7 +95,7 @@ def load_homework():
                         }
                     )
                 elif isinstance(assignment, dict):
-                    project_text = assignment.get("project", assignment.get("subject"))
+                    project_text = assignment.get("project")
                     if (
                         isinstance(project_text, str)
                         and project_text.strip()
@@ -103,8 +103,11 @@ def load_homework():
                     ):
                         valid_assignments.append(
                             {
-                                "project": project_text.strip(),
-                                "hide": assignment.get("hide", False),
+                            "project": project_text.strip(),
+                            "hide": assignment.get("hide", False),
+                            "ignore_prefix": assignment.get("ignore_prefix", False) is True,
+                            "ignore_suffix": assignment.get("ignore_suffix", False) is True,
+                            "secondary": assignment.get("secondary", False) is True,
                                 "date_modified": assignment.get(
                                     "date_modified", current_time()
                                 ),
@@ -181,6 +184,24 @@ class HomeworkEditor:
         self.main.columnconfigure(0, minsize=subject_width + 12, weight=0)
         self.main.columnconfigure(1, weight=1)
 
+    @staticmethod
+    def _make_mousewheel_handler(listbox):
+        def on_mousewheel(event):
+            if getattr(event, "delta", 0):
+                listbox.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            elif event.num == 4:
+                listbox.yview_scroll(-1, "units")
+            elif event.num == 5:
+                listbox.yview_scroll(1, "units")
+            return "break"
+        return on_mousewheel
+
+    def _bind_mousewheel(self, listbox):
+        handler = self._make_mousewheel_handler(listbox)
+        listbox.bind("<MouseWheel>", handler)
+        listbox.bind("<Button-4>", handler)
+        listbox.bind("<Button-5>", handler)
+
     def create_widgets(self):
         main = ttk.Frame(self.root, padding=12)
         main.pack(fill="both", expand=True)
@@ -203,6 +224,7 @@ class HomeworkEditor:
         )
         self.subject_list.grid(row=0, column=0, sticky="nsew")
         self.subject_list.bind("<<ListboxSelect>>", self.on_subject_selected)
+        self._bind_mousewheel(self.subject_list)
 
         subject_scrollbar = ttk.Scrollbar(
             subject_frame, orient="vertical", command=self.subject_list.yview
@@ -222,6 +244,7 @@ class HomeworkEditor:
         )
         self.assignment_list.grid(row=0, column=0, columnspan=2, sticky="nsew")
         self.assignment_list.bind("<<ListboxSelect>>", self.on_assignment_selected)
+        self._bind_mousewheel(self.assignment_list)
 
         scrollbar = ttk.Scrollbar(
             assignment_frame,
@@ -233,19 +256,20 @@ class HomeworkEditor:
 
         buttons = ttk.Frame(assignment_frame)
         buttons.grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 0))
-        ttk.Button(buttons, text="添加", command=self.add_assignment).pack(
-            side="left", padx=(0, 6)
-        )
-        ttk.Button(buttons, text="编辑选中项", command=self.edit_assignment).pack(
-            side="left", padx=(0, 6)
-        )
+        self.add_button = ttk.Button(buttons, text="添加...", command=self.add_assignment)
+        self.add_button.pack(side="left", padx=(0, 4))
+        self.edit_button = ttk.Button(buttons, text="编辑...", command=self.edit_assignment, state="disabled")
+        self.edit_button.pack(side="left", padx=(0, 4))
         self.toggle_button = ttk.Button(
             buttons, text="显示/隐藏", command=self.toggle_assignment
         )
-        self.toggle_button.pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="删除选中项", command=self.delete_assignment).pack(
-            side="left", padx=(0, 6)
-        )
+        self.toggle_button.pack(side="left", padx=(0, 4))
+        self.delete_button = ttk.Button(buttons, text="删除", command=self.delete_assignment, state="disabled")
+        self.delete_button.pack(side="left", padx=(0, 4))
+        self.move_up_button = ttk.Button(buttons, text="上置", command=self.move_up_assignment, state="disabled", width=4)
+        self.move_up_button.pack(side="left", padx=(0, 2))
+        self.move_down_button = ttk.Button(buttons, text="下置", command=self.move_down_assignment, state="disabled", width=4)
+        self.move_down_button.pack(side="left")
 
         bottom = ttk.Frame(main)
         bottom.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
@@ -272,7 +296,7 @@ class HomeworkEditor:
         else:
             self.selected_subject.set("")
             self.assignment_list.delete(0, tk.END)
-            self._update_toggle_button()
+            self._update_buttons_state()
 
     def refresh_assignments(self, assignment_index=None):
         self.assignment_list.delete(0, tk.END)
@@ -292,7 +316,7 @@ class HomeworkEditor:
             self.assignment_list.selection_set(index)
             self.assignment_list.activate(index)
             self.assignment_list.see(index)
-        self._update_toggle_button()
+        self._update_buttons_state()
 
     def on_subject_selected(self, _event=None):
         selection = self.subject_list.curselection()
@@ -303,18 +327,29 @@ class HomeworkEditor:
         self.refresh_assignments()
 
     def on_assignment_selected(self, _event=None):
-        self._update_toggle_button()
+        self._update_buttons_state()
 
-    def _update_toggle_button(self):
+    def _update_buttons_state(self, _event=None):
         selection = self.assignment_list.curselection()
         subject = self.selected_subject.get()
-        if selection and subject:
-            hidden = self.homework[subject][selection[0]]["hide"]
+        total = len(self.homework.get(subject, [])) if subject else 0
+        has_subject = bool(subject)
+        has_selection = bool(selection and subject)
+        self.add_button.configure(state="normal" if has_subject else "disabled")
+        self.edit_button.configure(state="normal" if has_selection else "disabled")
+        self.delete_button.configure(state="normal" if has_selection else "disabled")
+        if has_selection:
+            index = selection[0]
+            hidden = self.homework[subject][index]["hide"]
             self.toggle_button.configure(
                 text="显示" if hidden else "隐藏", state="normal"
             )
+            self.move_up_button.configure(state="normal" if index > 0 else "disabled")
+            self.move_down_button.configure(state="normal" if index < total - 1 else "disabled")
         else:
             self.toggle_button.configure(text="显示/隐藏", state="disabled")
+            self.move_up_button.configure(state="disabled")
+            self.move_down_button.configure(state="disabled")
 
     def _open_assignment_dialog(self, assignment_index=None):
         editing = assignment_index is not None
@@ -326,13 +361,13 @@ class HomeworkEditor:
         dialog.grab_set()
         dialog.minsize(500, 300)
         configure_tk_scaling(dialog)
-        dialog.geometry("640x380")
+        set_window_size_percent(dialog, 35, 35)
 
         form = ttk.Frame(dialog, padding=14)
         form.pack(fill="both", expand=True)
         form.rowconfigure(1, weight=1)
         form.columnconfigure(0, weight=1)
-        ttk.Label(form, text="项目内容（支持多行）").grid(
+        ttk.Label(form, text="项目内容").grid(
             row=0, column=0, sticky="w", pady=(0, 6)
         )
         text_frame = ttk.Frame(form)
@@ -347,7 +382,19 @@ class HomeworkEditor:
         scrollbar.grid(row=0, column=1, sticky="ns")
         editor.configure(yscrollcommand=scrollbar.set)
         if editing:
-            editor.insert("1.0", self.homework[subject][assignment_index]["project"])
+            current_assignment = self.homework[subject][assignment_index]
+            editor.insert("1.0", current_assignment["project"])
+        else:
+            current_assignment = {}
+
+        ignore_prefix_var = tk.BooleanVar(value=current_assignment.get("ignore_prefix", False))
+        ignore_suffix_var = tk.BooleanVar(value=current_assignment.get("ignore_suffix", False))
+        secondary_var = tk.BooleanVar(value=current_assignment.get("secondary", False))
+        property_row = ttk.Frame(form)
+        property_row.grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Checkbutton(property_row, text="忽略前缀", variable=ignore_prefix_var).pack(side="left", padx=(0, 12))
+        ttk.Checkbutton(property_row, text="忽略后缀", variable=ignore_suffix_var).pack(side="left", padx=(0, 12))
+        ttk.Checkbutton(property_row, text="次要项目", variable=secondary_var).pack(side="left")
 
         def save_assignment():
             value = editor.get("1.0", "end-1c").strip()
@@ -358,6 +405,9 @@ class HomeworkEditor:
             now = datetime.now().isoformat(timespec="seconds")
             if editing:
                 self.homework[subject][assignment_index]["project"] = value
+                self.homework[subject][assignment_index]["ignore_prefix"] = ignore_prefix_var.get()
+                self.homework[subject][assignment_index]["ignore_suffix"] = ignore_suffix_var.get()
+                self.homework[subject][assignment_index]["secondary"] = secondary_var.get()
                 self.homework[subject][assignment_index]["date_modified"] = now
                 selected_index = assignment_index
                 self.status_text.set("已编辑项目，请注意保存")
@@ -365,6 +415,9 @@ class HomeworkEditor:
                 self.homework[subject].append({
                     "project": value,
                     "hide": False,
+                    "ignore_prefix": ignore_prefix_var.get(),
+                    "ignore_suffix": ignore_suffix_var.get(),
+                    "secondary": secondary_var.get(),
                     "date_modified": now,
                 })
                 selected_index = len(self.homework[subject]) - 1
@@ -373,7 +426,7 @@ class HomeworkEditor:
             dialog.destroy()
 
         buttons = ttk.Frame(form)
-        buttons.grid(row=2, column=0, sticky="e", pady=(12, 0))
+        buttons.grid(row=3, column=0, sticky="e", pady=(12, 0))
         ttk.Button(buttons, text="取消", command=dialog.destroy).pack(
             side="right", padx=(8, 0)
         )
@@ -409,7 +462,7 @@ class HomeworkEditor:
         self.refresh_assignments(index)
         state = "已隐藏" if assignment["hide"] else "已显示"
         self.status_text.set(
-            "{}项目项，请点击保存写入文件".format(state)
+            "{}项目项".format(state)
         )
 
     def delete_assignment(self):
@@ -423,7 +476,31 @@ class HomeworkEditor:
         index = selection[0]
         del self.homework[subject][index]
         self.refresh_assignments(index)
-        self.status_text.set("已删除项目项，请点击保存写入文件")
+        self.status_text.set("已删除项目项")
+
+    def _move_assignment(self, direction):
+        selection = self.assignment_list.curselection()
+        subject = self.selected_subject.get()
+        if not selection or not subject:
+            return
+        index = selection[0]
+        assignments = self.homework[subject]
+        new_index = index + direction
+        if new_index < 0 or new_index >= len(assignments):
+            return
+        assignments[index], assignments[new_index] = assignments[new_index], assignments[index]
+        now = datetime.now().isoformat(timespec="seconds")
+        assignments[index]["date_modified"] = now
+        assignments[new_index]["date_modified"] = now
+        self.refresh_assignments(new_index)
+        state = "已上置" if direction < 0 else "已下置"
+        self.status_text.set("{}项目项".format(state))
+
+    def move_up_assignment(self):
+        self._move_assignment(-1)
+
+    def move_down_assignment(self):
+        self._move_assignment(1)
 
     def save(self):
         try:

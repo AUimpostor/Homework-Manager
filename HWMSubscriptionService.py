@@ -40,7 +40,7 @@ SETTINGS_NAME = "subscriptions.json"
 SUBJECT_NAMES = {
     "chinese": "语文", "maths": "数学", "english": "英语", "history": "历史",
     "politics": "政治", "physics": "物理", "chemistry": "化学", "biology": "生物",
-    "geography": "地理", "it": "信息技术", "pe": "体育", "art": "美术", "other": "其他",
+    "geography": "地理", "it": "信息", "pe": "体育", "art": "美术", "other": "其他",
 }
 
 DEFAULTS = {
@@ -117,7 +117,6 @@ def load_settings(directory=APP_DIR):
         result["source"] = dict(DEFAULTS["source"], **loaded.get("source", {}))
         result["source"]["password"] = _unprotect(result["source"].get("password", ""))
         result["subscribers"] = loaded.get("subscribers", [])
-        # Discard the legacy daily-send marker; schedules now fire only on exact time matches.
         result.pop("last_sent_date", None)
         try:
             result["schedule_time"] = normalize_schedule_time(result.get("schedule_time", DEFAULTS["schedule_time"]))
@@ -149,11 +148,16 @@ def homework_text(directory=APP_DIR):
             visible = []
             for assignment in assignments if isinstance(assignments, list) else []:
                 if isinstance(assignment, str) and assignment.strip():
-                    visible.append(assignment.strip())
+                    visible.append({"project": assignment.strip()})
                 elif isinstance(assignment, dict) and not assignment.get("hide", False):
-                    text = assignment.get("project", assignment.get("subject", ""))
+                    text = assignment.get("project", "")
                     if isinstance(text, str) and text.strip():
-                        visible.append(text.strip())
+                        visible.append({
+                            "project": text.strip(),
+                            "ignore_prefix": assignment.get("ignore_prefix", False) is True,
+                            "ignore_suffix": assignment.get("ignore_suffix", False) is True,
+                            "secondary": assignment.get("secondary", False) is True,
+                        })
             if visible:
                 sections.append((SUBJECT_NAMES.get(subject, subject), visible))
     return sections
@@ -164,6 +168,7 @@ def send_push(settings, directory=APP_DIR, recipients=None):
     if any(not str(source.get(key, "")).strip() for key in required):
         raise ValueError("请先完整填写推送源 SMTP 配置。")
     targets = recipients if recipients is not None else settings.get("subscribers", [])
+    targets = [person for person in targets if person.get("enabled", True) is not False]
     if not targets:
         raise ValueError("没有可发送的订阅账户。")
     sections = homework_text(directory)
@@ -172,10 +177,19 @@ def send_push(settings, directory=APP_DIR, recipients=None):
     html_sections = []
     for name, assignments in sections:
         lines.append(name + "：")
-        lines.extend("  • " + assignment for assignment in assignments)
+        html_projects = []
+        for assignment in assignments:
+            prefix = "" if assignment.get("ignore_prefix", False) else app_config.get("project_prefix", "")
+            suffix = "" if assignment.get("ignore_suffix", False) else app_config.get("project_suffix", "")
+            text = "{}{}{}".format(prefix, assignment["project"], suffix)
+            lines.append("  " + text)
+            font_size = app_config.get("secondary_project_font_size", 11) if assignment.get("secondary", False) else app_config.get("project_font_size", 14)
+            html_projects.append('<div style="font-size: {}pt">{}</div>'.format(
+                html.escape(str(font_size)), html.escape(text)
+            ))
         lines.append("")
-        html_sections.append("<strong>{}：</strong><br>{}<br><br>".format(
-            html.escape(name), "<br>".join("• " + html.escape(assignment) for assignment in assignments)
+        html_sections.append("<strong>{}：</strong><br>{}<br>".format(
+            html.escape(name), "".join(html_projects)
         ))
     for person in targets:
         msg = EmailMessage()
@@ -195,7 +209,9 @@ def send_push(settings, directory=APP_DIR, recipients=None):
             body = body.replace(token, value)
             if token != "%hw%":
                 safe_body = safe_body.replace(token, html.escape(str(value)))
-        hw_html = "".join(html_sections) if html_sections else "（今天没有作业）"
+        hw_alignment = "left" if app_config.get("project_alignment") == "靠左" else "right"
+        hw_content = "".join(html_sections) if html_sections else "（今天没有作业）"
+        hw_html = '<div style="text-align: {}">{}</div>'.format(hw_alignment, hw_content)
         safe_body = safe_body.replace("%hw%", hw_html).replace("\n", "<br>")
         msg["Subject"] = title.replace("\r", " ").replace("\n", " ")
         msg["From"] = source["email"]
@@ -261,8 +277,11 @@ def maybe_send_scheduled(directory=APP_DIR, now=None):
             scheduled_time.hour, scheduled_time.minute, scheduled_time.second
         ):
             return
-        send_push(settings, directory)
+        active_subscribers = [person for person in settings.get("subscribers", []) if person.get("enabled", True) is not False]
+        if not active_subscribers:
+            return
+        send_push(settings, directory, recipients=active_subscribers)
         with (Path(directory) / "push.log").open("a", encoding="utf-8") as log:
-            log.write("{} scheduled push sent to {} subscribers\n".format(now.isoformat(timespec="seconds"), len(settings.get("subscribers", []))))
+            log.write("{} scheduled push sent to {} subscribers\n".format(now.isoformat(timespec="seconds"), len(active_subscribers)))
     finally:
         _schedule_lock.release()

@@ -54,7 +54,7 @@ SUBJECT_NAMES = {
 	"chemistry": "化学",
 	"biology": "生物",
 	"geography": "地理",
-	"it": "信息技术",
+	"it": "信息",
 	"pe": "体育",
 	"art": "美术",
 	"other": "其他",
@@ -95,15 +95,20 @@ def format_homework(work_list):
 			assignments = []
 			for assignment in homework:
 				if isinstance(assignment, str) and assignment.strip():
-					assignments.append(assignment.strip())
+					assignments.append({"project": assignment.strip()})
 				elif isinstance(assignment, dict):
-					text = assignment.get("project", assignment.get("subject"))
+					text = assignment.get("project")
 					if (
 						isinstance(text, str)
 						and text.strip()
 						and assignment.get("hide", False) is not True
 					):
-						assignments.append(text.strip())
+						assignments.append({
+							"project": text.strip(),
+							"ignore_prefix": assignment.get("ignore_prefix", False) is True,
+							"ignore_suffix": assignment.get("ignore_suffix", False) is True,
+							"secondary": assignment.get("secondary", False) is True,
+						})
 			if assignments:
 				subject_name = SUBJECT_NAMES.get(subject, subject)
 				sections.append((subject_name, assignments))
@@ -116,11 +121,11 @@ def load_document():
 	data = load_homework_data(HOMEWORK_FILE, CONFIG_FILE)
 
 	for key in (
-		"title_width", "title_length", "title_font_size", "project_font_size",
-		"title_guide_line_width",
-		"display_range_left", "display_range_right", "display_range_top",
-		"display_range_bottom", "content_padding_x", "content_padding_y",
-		"section_spacing", "scroll_start_delay", "scroll_step_interval",
+		"title_width_permill", "title_length_permill", "title_font_size", "project_font_size", "secondary_project_font_size",
+		"title_guide_line_width_permill",
+		"display_range_left_percent", "display_range_right_percent", "display_range_top_percent",
+		"display_range_bottom_percent", "content_padding_x_permill", "content_padding_y_permill",
+		"section_spacing_permill", "scroll_start_delay", "scroll_step_interval",
 		"scroll_end_pause", "restart_pause", "fade_interval",
 	):
 		try:
@@ -132,14 +137,22 @@ def load_document():
 			config[key] = float(config[key])
 		except (TypeError, ValueError, KeyError):
 			config[key] = DEFAULT_CONFIG[key]
-	for key in ("display_range_left", "display_range_right", "display_range_top", "display_range_bottom"):
+	for key in ("display_range_left_percent", "display_range_right_percent", "display_range_top_percent", "display_range_bottom_percent"):
 		config[key] = min(100, config[key])
-	if config["display_range_right"] <= config["display_range_left"]:
-		config["display_range_left"] = DEFAULT_CONFIG["display_range_left"]
-		config["display_range_right"] = DEFAULT_CONFIG["display_range_right"]
-	if config["display_range_bottom"] <= config["display_range_top"]:
-		config["display_range_top"] = DEFAULT_CONFIG["display_range_top"]
-		config["display_range_bottom"] = DEFAULT_CONFIG["display_range_bottom"]
+	for key in (
+		"title_width_permill", "title_length_permill", "title_guide_line_width_permill",
+		"content_padding_x_permill", "content_padding_y_permill", "section_spacing_permill",
+	):
+		try:
+			config[key] = max(1, min(1000, int(config[key])))
+		except (TypeError, ValueError, KeyError):
+			config[key] = DEFAULT_CONFIG[key]
+	if config["display_range_right_percent"] <= config["display_range_left_percent"]:
+		config["display_range_left_percent"] = DEFAULT_CONFIG["display_range_left_percent"]
+		config["display_range_right_percent"] = DEFAULT_CONFIG["display_range_right_percent"]
+	if config["display_range_bottom_percent"] <= config["display_range_top_percent"]:
+		config["display_range_top_percent"] = DEFAULT_CONFIG["display_range_top_percent"]
+		config["display_range_bottom_percent"] = DEFAULT_CONFIG["display_range_bottom_percent"]
 	config["window_alpha"] = min(1.0, max(0.1, float(config.get("window_alpha", DEFAULT_CONFIG["window_alpha"]))))
 	config["scroll_step_size"] = min(1.0, max(0.0001, config["scroll_step_size"]))
 	config["fade_step"] = min(1.0, max(0.01, config["fade_step"]))
@@ -149,7 +162,7 @@ def load_document():
 	for key in ("title_alignment", "project_alignment"):
 		if config.get(key) not in ("靠左", "靠右"):
 			config[key] = DEFAULT_CONFIG[key]
-	for key in ("title_font_color", "project_font_color", "title_primary_color", "title_secondary_color"):
+	for key in ("title_font_color", "project_font_color", "secondary_project_font_color", "title_primary_color", "title_secondary_color"):
 		if not isinstance(config.get(key), str) or not config[key].strip():
 			config[key] = DEFAULT_CONFIG[key]
 
@@ -176,12 +189,17 @@ def main():
 
 	screen_width = root.winfo_screenwidth()
 	screen_height = root.winfo_screenheight()
-	window_left = int(screen_width * config["display_range_left"] / 100)
-	window_right = int(screen_width * config["display_range_right"] / 100)
+	def permill_x(value):
+		return max(1, round(screen_width * value / 1000))
+	def permill_y(value):
+		return max(1, round(screen_height * value / 1000))
+
+	window_left = int(screen_width * config["display_range_left_percent"] / 100)
+	window_right = int(screen_width * config["display_range_right_percent"] / 100)
 	left = window_left
 	window_width = window_right - window_left
-	top = int(screen_height * config["display_range_top"] / 100)
-	window_bottom = int(screen_height * config["display_range_bottom"] / 100)
+	top = int(screen_height * config["display_range_top_percent"] / 100)
+	window_bottom = int(screen_height * config["display_range_bottom_percent"] / 100)
 	window_height = window_bottom - top
 	root.geometry("{}x{}+{}+{}".format(window_width, window_height, left, top))
 
@@ -192,7 +210,8 @@ def main():
 	)
 	scroll_canvas.pack(
 		fill="both", expand=True,
-		padx=config["content_padding_x"], pady=config["content_padding_y"],
+		padx=permill_x(config["content_padding_x_permill"]),
+		pady=permill_y(config["content_padding_y_permill"]),
 	)
 
 	content = tk.Frame(scroll_canvas, background=transparent_color)
@@ -216,10 +235,10 @@ def main():
 		nonlocal max_alpha
 		max_alpha = config["window_alpha"]
 		root.attributes("-alpha", max_alpha)
-		window_left = int(screen_width * config["display_range_left"] / 100)
-		window_right = int(screen_width * config["display_range_right"] / 100)
-		top = int(screen_height * config["display_range_top"] / 100)
-		window_bottom = int(screen_height * config["display_range_bottom"] / 100)
+		window_left = int(screen_width * config["display_range_left_percent"] / 100)
+		window_right = int(screen_width * config["display_range_right_percent"] / 100)
+		top = int(screen_height * config["display_range_top_percent"] / 100)
+		window_bottom = int(screen_height * config["display_range_bottom_percent"] / 100)
 		root.geometry("{}x{}+{}+{}".format(
 			window_right - window_left,
 			window_bottom - top,
@@ -227,8 +246,8 @@ def main():
 			top,
 		))
 		scroll_canvas.pack_configure(
-			padx=config["content_padding_x"],
-			pady=config["content_padding_y"],
+			padx=permill_x(config["content_padding_x_permill"]),
+			pady=permill_y(config["content_padding_y_permill"]),
 		)
 
 	def render_homework():
@@ -240,16 +259,17 @@ def main():
 
 		for subject_name, assignments in sections:
 			section = tk.Frame(content, background=transparent_color)
-			section.pack(fill="x", anchor="e", pady=(0, config["section_spacing"]))
+			section.pack(fill="x", anchor="e", pady=(0, permill_y(config["section_spacing_permill"])))
 
 			header_font = tkfont.Font(
 				family="Microsoft YaHei UI", size=config["title_font_size"], weight="bold"
 			)
 			header_text = "{}".format(subject_name)
-			header_height = max(1, config["title_length"])
-			main_width = max(1, config["title_width"])
+			header_height = permill_y(config["title_length_permill"])
+			main_width = permill_x(config["title_width_permill"])
 			theme = config.get("title_theme", "默认")
-			secondary_width = max(1, config.get("title_guide_line_width", 10)) if theme == "默认" else 0
+			guide_line_width = permill_x(config.get("title_guide_line_width_permill", 10))
+			secondary_width = guide_line_width if theme == "默认" else 0
 			canvas_width = main_width + secondary_width if theme == "默认" else main_width
 			header = tk.Canvas(
 				section,
@@ -289,15 +309,15 @@ def main():
 				dot = max(4, min(12, header_height // 4))
 				header.create_oval(10, (header_height-dot)//2, 10+dot, (header_height+dot)//2, fill=secondary, outline=secondary_outline)
 			elif theme == "左侧标记":
-				mark = max(1, min(header_height, config.get("title_guide_line_width", 10)))
+				mark = max(1, min(header_height, guide_line_width))
 				header.create_rectangle(0, 0, main_width, header_height, fill=primary, outline=primary_outline)
 				header.create_rectangle(0, 0, mark, header_height, fill=secondary, outline=secondary_outline)
 			elif theme == "底边强调":
-				bar = max(1, min(header_height, config.get("title_guide_line_width", 10)))
+				bar = max(1, min(header_height, guide_line_width))
 				header.create_rectangle(0, 0, main_width, header_height, fill=primary, outline=primary_outline)
 				header.create_rectangle(0, header_height-bar, main_width, header_height, fill=secondary, outline=secondary_outline)
 			elif theme == "顶面强调":
-				bar = max(1, min(header_height, config.get("title_guide_line_width", 10)))
+				bar = max(1, min(header_height, guide_line_width))
 				header.create_rectangle(0, 0, main_width, header_height, fill=primary, outline=primary_outline)
 				header.create_rectangle(0, 0, main_width, bar, fill=secondary, outline=secondary_outline)
 			elif theme == "角标标题":
@@ -318,21 +338,22 @@ def main():
 			)
 			header.pack(anchor="w" if title_is_left else "e")
 
-			homework = tk.Label(
-				section,
-				text="\n".join(
-					"{}{}{}".format(
-						config["project_prefix"], assignment, config["project_suffix"]
-					)
-					for assignment in assignments
-				),
-				anchor="w" if project_is_left else "e",
-				justify="left" if project_is_left else "right",
-				font=("Microsoft YaHei UI", config["project_font_size"]),
-				foreground=config["project_font_color"],
-				background=transparent_color,
-			)
-			homework.pack(anchor="w" if project_is_left else "e", pady=(4, 0))
+			for assignment in assignments:
+				is_secondary = assignment.get("secondary", False)
+				homework = tk.Label(
+					section,
+					text="{}{}{}".format(
+						"" if assignment.get("ignore_prefix", False) else config["project_prefix"],
+						assignment["project"],
+						"" if assignment.get("ignore_suffix", False) else config["project_suffix"],
+					),
+					anchor="w" if project_is_left else "e",
+					justify="left" if project_is_left else "right",
+					font=("Microsoft YaHei UI", config["secondary_project_font_size"] if is_secondary else config["project_font_size"]),
+					foreground=config["secondary_project_font_color"] if is_secondary else config["project_font_color"],
+					background=transparent_color,
+				)
+				homework.pack(anchor="w" if project_is_left else "e", pady=(4, 0))
 
 	render_homework()
 	animation_generation = 0
@@ -350,6 +371,84 @@ def main():
 			except Exception:
 				pass
 		animation_after_ids.clear()
+
+	def manual_scroll(event):
+		"""Allow wheel and arrow-key scrolling while the pointer is over the display."""
+		nonlocal animation_generation
+		if event.type == tk.EventType.MouseWheel:
+			steps = -3 if event.delta > 0 else 3
+		elif getattr(event, "num", None) == 4:
+			steps = -3
+		elif getattr(event, "num", None) == 5:
+			steps = 3
+		elif event.keysym == "Up":
+			steps = -3
+		elif event.keysym == "Down":
+			steps = 3
+		else:
+			return
+		pointer_x = event.x_root if hasattr(event, "x_root") else root.winfo_pointerx()
+		pointer_y = event.y_root if hasattr(event, "y_root") else root.winfo_pointery()
+		widget = root.winfo_containing(pointer_x, pointer_y)
+		if widget is None or not str(widget).startswith(str(root)):
+			return
+		cancel_animation_jobs()
+		animation_generation += 1
+		scroll_canvas.yview_scroll(steps, "units")
+		schedule_animation(config["scroll_start_delay"], auto_scroll)
+		return "break"
+
+	touch_drag_y = None
+	touch_drag_start_y = None
+	touch_dragged = False
+
+	def touch_drag_start(event):
+		nonlocal touch_drag_y, touch_drag_start_y, touch_dragged, animation_generation
+		touch_drag_y = event.y_root
+		touch_drag_start_y = event.y_root
+		touch_dragged = False
+		cancel_animation_jobs()
+		animation_generation += 1
+
+	def touch_drag_motion(event):
+		nonlocal touch_drag_y, touch_dragged
+		if touch_drag_y is None:
+			return
+		delta_y = event.y_root - touch_drag_y
+		touch_drag_y = event.y_root
+		if abs(event.y_root - touch_drag_start_y) >= 2:
+			touch_dragged = True
+		if not touch_dragged:
+			return
+		bounds = scroll_canvas.bbox("all")
+		if not bounds:
+			return "break"
+		content_height = bounds[3] - bounds[1]
+		viewport_height = scroll_canvas.winfo_height()
+		if content_height > viewport_height:
+			first, _last = scroll_canvas.yview()
+			scroll_canvas.yview_moveto(
+				first - delta_y / content_height
+			)
+		return "break"
+
+	def touch_drag_end(_event):
+		nonlocal touch_drag_y, touch_drag_start_y
+		was_dragged = touch_dragged
+		touch_drag_y = None
+		touch_drag_start_y = None
+		if was_dragged:
+			schedule_animation(config["scroll_start_delay"], auto_scroll)
+
+	root.bind_all("<ButtonPress-1>", touch_drag_start, add="+")
+	root.bind_all("<B1-Motion>", touch_drag_motion, add="+")
+	root.bind_all("<ButtonRelease-1>", touch_drag_end, add="+")
+
+	root.bind_all("<MouseWheel>", manual_scroll, add="+")
+	root.bind_all("<Button-4>", manual_scroll, add="+")
+	root.bind_all("<Button-5>", manual_scroll, add="+")
+	root.bind_all("<KeyPress-Up>", manual_scroll, add="+")
+	root.bind_all("<KeyPress-Down>", manual_scroll, add="+")
 
 	def reload_homework():
 		nonlocal animation_generation
@@ -398,8 +497,6 @@ def main():
 		if content_height <= viewport_height:
 			return
 
-		scroll_canvas.yview_moveto(0)
-
 		def scroll_step():
 			if generation != animation_generation:
 				return
@@ -446,6 +543,15 @@ def main():
 		cancel_animation_jobs()
 		close_config_reload_event(reload_event)
 		close_shutdown_event(shutdown_event)
+		if hasattr(root, "_hwm_old_window_proc"):
+			try:
+				ctypes.windll.user32.SetWindowLongPtrW(
+					root._hwm_window_handle,
+					-4,
+					root._hwm_old_window_proc,
+				)
+			except (AttributeError, OSError):
+				pass
 		root.destroy()
 
 	root.bind("<Escape>", lambda _event: close_display())
