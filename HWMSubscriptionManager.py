@@ -19,6 +19,7 @@ import json
 import threading
 import tkinter as tk
 from datetime import datetime
+from pathlib import Path
 from tkinter import messagebox, ttk
 
 from HWMRuntime import (
@@ -28,12 +29,14 @@ from HWMRuntime import (
     enable_high_dpi,
     enable_touch_keyboard,
     set_window_icon,
+    set_window_size_percent,
     wait_for_shutdown,
 )
 from HWMSubscriptionService import (
     DEFAULTS,
     check_smtp_connection,
     load_settings,
+    normalize_schedule_time,
     save_settings,
     send_push,
 )
@@ -45,7 +48,7 @@ class SubscriptionManager:
         enable_touch_keyboard(root)
         set_window_icon(root, __file__)
         self.root.title("Homework Manager 推送管理器")
-        self.root.geometry("1060x760")
+        set_window_size_percent(self.root, 55.21, 70.37)
         self.root.minsize(880, 620)
         self.settings = load_settings()
         self.status = tk.StringVar(value="就绪")
@@ -105,9 +108,18 @@ class SubscriptionManager:
         scrollbar.grid(row=0, column=1, sticky="ns", pady=(0, 8))
         self.listbox.configure(yscrollcommand=scrollbar.set)
         actions = ttk.Frame(accounts); actions.grid(row=1, column=0, sticky="ew")
-        ttk.Button(actions, text="添加账户...", command=self._add_account).pack(side="left")
-        ttk.Button(actions, text="编辑...", command=self._edit_account).pack(side="left", padx=8)
-        ttk.Button(actions, text="删除", command=self._delete).pack(side="left")
+        ttk.Button(actions, text="添加账户...", command=self._add_account).pack(side="left", padx=(0,6))
+        self.edit_account_button = ttk.Button(actions, text="编辑选中账户...", command=self._edit_account, state="disabled")
+        self.edit_account_button.pack(side="left", padx=(0,6))
+        self.delete_account_button = ttk.Button(actions, text="删除选中账户", command=self._delete, state="disabled")
+        self.delete_account_button.pack(side="left", padx=(0,6))
+        self.move_up_button = ttk.Button(actions, text="上置", command=self._move_up_account, state="disabled", width=4)
+        self.move_up_button.pack(side="left", padx=(0, 0))
+        self.move_down_button = ttk.Button(actions, text="下置", command=self._move_down_account, state="disabled", width=4)
+        self.move_down_button.pack(side="left", padx=(2, 0))
+        self.toggle_button = ttk.Button(actions, text="禁用账户", command=self._toggle_account)
+        self.toggle_button.pack(side="right")
+        self.listbox.bind("<<ListboxSelect>>", self._update_buttons_state)
 
         right = ttk.Frame(frame); right.grid(row=1, column=1, rowspan=2, sticky="nsew")
         right.columnconfigure(0, weight=1); right.rowconfigure(1, weight=1)
@@ -125,28 +137,108 @@ class SubscriptionManager:
         schedule.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         self.enabled = tk.BooleanVar()
         ttk.Checkbutton(schedule, text="每日推送（仅 HWM 运行时）", variable=self.enabled).grid(row=0, column=0, columnspan=3, sticky="w")
-        self.time_var = tk.StringVar(value="18:00")
-        ttk.Label(schedule, text="时间（24 小时制）").grid(row=1, column=0, sticky="w", pady=4)
-        ttk.Entry(schedule, textvariable=self.time_var, width=10).grid(row=1, column=1, sticky="w", pady=4)
+        self.time_var = tk.StringVar(value="18:00:00")
+        ttk.Label(schedule, text="时间（24 时制）").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Entry(schedule, textvariable=self.time_var, width=12).grid(row=1, column=1, sticky="w", pady=4)
         ttk.Button(schedule, text="保存定时设置", command=self._save_schedule).grid(row=1, column=2, padx=(8, 0))
         bottom = ttk.Frame(frame)
         bottom.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         ttk.Label(bottom, textvariable=self.status).pack(side="left")
-        ttk.Button(bottom, text="推送所有订阅账户...", command=self._push).pack(side="right")
+        ttk.Button(bottom, text="推送所有订阅账户", command=self._push).pack(side="right")
 
     def _populate(self):
         s = self.settings["source"]
         for key, var in self.vars.items(): var.set(str(s.get(key, "")))
         self.security.set(s.get("security", "SSL"))
         self.enabled.set(bool(self.settings.get("schedule_enabled")))
-        self.time_var.set(self.settings.get("schedule_time", "18:00"))
+        try:
+            saved_schedule_time = normalize_schedule_time(self.settings.get("schedule_time", "18:00:00"))
+        except ValueError:
+            saved_schedule_time = str(self.settings.get("schedule_time", "18:00:00"))
+        self.time_var.set(saved_schedule_time)
         self.title_text.delete("1.0", tk.END)
         self.title_text.insert("1.0", self.settings.get("title_template", DEFAULTS["title_template"]))
         self.body_text.delete("1.0", tk.END)
         self.body_text.insert("1.0", self.settings.get("body_template", DEFAULTS["body_template"]))
         self.listbox.delete(0, tk.END)
         for p in self.settings.get("subscribers", []):
-            self.listbox.insert(tk.END, "{}  |  {}  |  {}".format(p.get("nickname", ""), p.get("salutation", ""), p.get("email", "")))
+            disabled = p.get("enabled", True) is False
+            label = "{}  |  {}  |  {}".format(p.get("nickname", ""), p.get("salutation", ""), p.get("email", ""))
+            self.listbox.insert(tk.END, label + ("  （已禁用）" if disabled else ""))
+            if disabled:
+                self.listbox.itemconfig(tk.END, foreground="#999999")
+        self._update_buttons_state()
+
+    def _update_buttons_state(self, _event=None):
+        selection = self.listbox.curselection()
+        total = len(self.settings.get("subscribers", []))
+        has_selection = bool(selection)
+        self.edit_account_button.configure(state="normal" if has_selection else "disabled")
+        self.delete_account_button.configure(state="normal" if has_selection else "disabled")
+        if not has_selection:
+            self.toggle_button.configure(text="禁用账户", state="disabled")
+            self.move_up_button.configure(state="disabled")
+            self.move_down_button.configure(state="disabled")
+            return
+        index = selection[0]
+        person = self.settings["subscribers"][index]
+        disabled = person.get("enabled", True) is False
+        self.toggle_button.configure(text="启用账户" if disabled else "禁用账户", state="normal")
+        self.move_up_button.configure(state="normal" if index > 0 else "disabled")
+        self.move_down_button.configure(state="normal" if index < total - 1 else "disabled")
+
+    def _log_account_action(self, action, person):
+        self.status.set("{}订阅账户：{} <{}>".format(
+            action, person.get("nickname", ""), person.get("email", "")))
+
+    def _move_account(self, direction):
+        selected = self.listbox.curselection()
+        if not selected:
+            return
+        index = selected[0]
+        subscribers = self.settings.get("subscribers", [])
+        new_index = index + direction
+        if new_index < 0 or new_index >= len(subscribers):
+            return
+        original = subscribers[:]
+        subscribers[index], subscribers[new_index] = subscribers[new_index], subscribers[index]
+        try:
+            save_settings(self.settings)
+        except (OSError, ValueError) as error:
+            self.settings["subscribers"] = original
+            messagebox.showerror("保存失败", str(error), parent=self.root)
+            return
+        self._populate()
+        self.listbox.selection_set(new_index)
+        self.listbox.see(new_index)
+        self._update_buttons_state()
+        person = subscribers[new_index]
+        self.status.set("{}订阅账户：{}".format("已上置" if direction < 0 else "已下置", person.get("nickname", "")))
+
+    def _move_up_account(self):
+        self._move_account(-1)
+
+    def _move_down_account(self):
+        self._move_account(1)
+
+    def _toggle_account(self):
+        selected = self.listbox.curselection()
+        if not selected:
+            return
+        index = selected[0]
+        person = self.settings["subscribers"][index]
+        old_enabled = person.get("enabled", True) is not False
+        person["enabled"] = not old_enabled
+        try:
+            save_settings(self.settings)
+        except (OSError, ValueError) as error:
+            person["enabled"] = old_enabled
+            messagebox.showerror("保存失败", str(error), parent=self.root)
+            return
+        self._populate()
+        self.listbox.selection_set(index)
+        self._update_buttons_state()
+        self._log_account_action("启用" if not old_enabled else "禁用", person)
 
     def _edit_account(self):
         selected = self.listbox.curselection()
@@ -165,7 +257,7 @@ class SubscriptionManager:
         set_window_icon(dialog, __file__)
         dialog.title("编辑订阅账户" if editing else "添加订阅账户")
         dialog.transient(self.root); dialog.grab_set(); dialog.resizable(False, False)
-        configure_tk_scaling(dialog); dialog.geometry("430x280")
+        configure_tk_scaling(dialog); set_window_size_percent(dialog, 22.40, 25.93)
         form = ttk.Frame(dialog, padding=16); form.pack(fill="both", expand=True)
         form.columnconfigure(1, weight=1)
         nickname = tk.StringVar(value=original.get("nickname", "") if original else "")
@@ -192,7 +284,8 @@ class SubscriptionManager:
             greeting = custom.get().strip() if preset.get() == "自定义（填写）" else ("" if preset.get() == "无" else preset.get())
             if not name or (preset.get() == "自定义（填写）" and not greeting) or "@" not in address:
                 messagebox.showwarning("信息不完整", "请填写昵称、称呼和有效的电子邮箱地址。", parent=dialog); return
-            person = {"nickname": name, "salutation": greeting, "email": address}
+            person = {"nickname": name, "salutation": greeting, "email": address,
+                      "enabled": original.get("enabled", True) if editing else True}
             if editing:
                 self.settings["subscribers"][account_index] = person
             else:
@@ -205,6 +298,7 @@ class SubscriptionManager:
                     self.settings["subscribers"].pop()
                 messagebox.showerror("保存失败", str(error), parent=dialog); return
             self._populate()
+            self._log_account_action("编辑" if editing else "添加", person)
             dialog.destroy()
         ttk.Button(form, text="确定", command=save_account).grid(row=4, column=1, sticky="e", pady=(12, 0))
 
@@ -244,7 +338,6 @@ class SubscriptionManager:
         self._smtp_check_generation += 1
         generation = self._smtp_check_generation
         source = dict(self.settings.get("source", {}))
-        # Include unsaved values in the form so the status always tests what is currently visible.
         if self.vars:
             source = {key: variable.get().strip() for key, variable in self.vars.items()}
             try: source["port"] = int(source.get("port") or 465)
@@ -277,12 +370,14 @@ class SubscriptionManager:
     def _save_schedule(self):
         try:
             schedule_time = self.time_var.get().strip()
-            datetime.strptime(schedule_time, "%H:%M")
+            normalized_time = normalize_schedule_time(schedule_time)
+            if normalized_time != schedule_time:
+                raise ValueError("请精确填写到秒，格式为 HH:MM:SS（例如 18:30:00）。")
             enabled = self.enabled.get()
             if enabled and (not self.settings.get("schedule_enabled") or self.settings.get("schedule_time") != schedule_time):
                 if not messagebox.askyesno("确认定时推送", "确认每天 {} 向所有订阅账户发送推送邮件？\n仅当 HWM 正在运行时执行。".format(schedule_time), parent=self.root): return
             self.settings["schedule_enabled"] = enabled
-            self.settings["schedule_time"] = schedule_time
+            self.settings["schedule_time"] = normalized_time
             save_settings(self.settings); self.status.set("定时推送设置已保存")
         except (OSError, ValueError) as error: messagebox.showerror("保存失败", str(error), parent=self.root)
 
@@ -291,8 +386,9 @@ class SubscriptionManager:
             settings = self._read()
             settings["title_template"] = self.title_text.get("1.0", "end-1c")
             settings["body_template"] = self.body_text.get("1.0", "end-1c")
-            if not settings["subscribers"]: raise ValueError("请先添加订阅账户。")
-            if not messagebox.askyesno("确认发出推送", "将立即向 {} 个订阅账户推送作业\n确认发送？".format(len(settings["subscribers"])), parent=self.root): return
+            active_count = sum(1 for p in settings["subscribers"] if p.get("enabled", True) is not False)
+            if not active_count: raise ValueError("没有已启用的订阅账户可推送。")
+            if not messagebox.askyesno("确认发出推送", "将立即向 {} 个订阅账户推送作业\n确认发送？".format(active_count), parent=self.root): return
             save_settings(settings)
             self.status.set("正在发送...")
             threading.Thread(target=self._send_worker, args=(settings,), daemon=True).start()

@@ -169,20 +169,9 @@ class HomeworkEditor:
     def reload_config(self):
         try:
             _, self.config = load_homework()
-            self.apply_subject_list_width()
             self.status_text.set("已从文件刷新项目和配置")
         except (OSError, json.JSONDecodeError, ValueError) as error:
             self.status_text.set("刷新配置失败：{}".format(error))
-
-    def apply_subject_list_width(self):
-        subject_width_percent = max(
-            0, min(100, int(self.config.get("subject_list_width_percent", 25)))
-        )
-        subject_width = round(
-            self.root.winfo_screenwidth() * subject_width_percent / 100
-        )
-        self.main.columnconfigure(0, minsize=subject_width + 12, weight=0)
-        self.main.columnconfigure(1, weight=1)
 
     @staticmethod
     def _make_mousewheel_handler(listbox):
@@ -206,8 +195,8 @@ class HomeworkEditor:
         main = ttk.Frame(self.root, padding=12)
         main.pack(fill="both", expand=True)
         self.main = main
-        self.apply_subject_list_width()
         main.rowconfigure(1, weight=1)
+        main.columnconfigure(1, weight=1)
 
         ttk.Label(main, text="科目").grid(row=0, column=0, sticky="w", padx=(0, 12))
         ttk.Label(main, text="项目").grid(row=0, column=1, sticky="w")
@@ -219,7 +208,7 @@ class HomeworkEditor:
 
         self.subject_list = tk.Listbox(
             subject_frame,
-            width=3,
+            width=5,
             exportselection=False,
         )
         self.subject_list.grid(row=0, column=0, sticky="nsew")
@@ -242,7 +231,7 @@ class HomeworkEditor:
             exportselection=False,
             selectmode=tk.SINGLE,
         )
-        self.assignment_list.grid(row=0, column=0, columnspan=2, sticky="nsew")
+        self.assignment_list.grid(row=0, column=0, sticky="nsew")
         self.assignment_list.bind("<<ListboxSelect>>", self.on_assignment_selected)
         self._bind_mousewheel(self.assignment_list)
 
@@ -251,7 +240,7 @@ class HomeworkEditor:
             orient="vertical",
             command=self.assignment_list.yview,
         )
-        scrollbar.grid(row=0, column=2, sticky="ns")
+        scrollbar.grid(row=0, column=1, sticky="ns")
         self.assignment_list.configure(yscrollcommand=scrollbar.set)
 
         buttons = ttk.Frame(assignment_frame)

@@ -46,7 +46,6 @@ DEFAULT_CONFIG = {
     "dashboard_height_percent": 40,
     "editor_width_percent": 50,
     "editor_height_percent": 50,
-    "subject_list_width_percent": 5,
     "display_range_left_percent": 55,
     "display_range_right_percent": 100,
     "display_range_top_percent": 2,
@@ -128,7 +127,6 @@ def load_config_document(config_file):
                     ("content_padding_x", "content_padding_x_permill"),
                     ("content_padding_y", "content_padding_y_permill"),
                     ("section_spacing", "section_spacing_permill"),
-                    ("subject_list_width_percent", "subject_list_width_percent"),
                     ("display_range_left", "display_range_left_percent"),
                     ("display_range_right", "display_range_right_percent"),
                     ("display_range_top", "display_range_top_percent"),
@@ -146,6 +144,7 @@ def load_config_document(config_file):
                 for obsolete_key in (
                     "dashboard_width", "dashboard_height", "editor_width",
                     "editor_height", "editor_subject_width",
+                    "subject_list_width_percent",
                 ):
                     config.pop(obsolete_key, None)
                 legacy_font_color = config_item.get("font_color", legacy_font_color)

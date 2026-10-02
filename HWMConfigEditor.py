@@ -81,7 +81,6 @@ INTEGER_FIELDS = (
     "title_guide_line_width_permill",
     "title_outline_opacity",
     "editor_width_percent", "editor_height_percent",
-    "subject_list_width_percent",
     "display_range_left_percent", "display_range_right_percent", "display_range_top_percent",
     "display_range_bottom_percent", "content_padding_x_permill", "content_padding_y_permill",
     "section_spacing_permill", "scroll_start_delay", "scroll_step_interval",
@@ -137,7 +136,6 @@ FIELD_LABELS = {
     "project_suffix": "项目后缀",
     "editor_width_percent": "项目编辑器宽度（%）",
     "editor_height_percent": "项目编辑器高度（%）",
-    "subject_list_width_percent": "科目列表宽度（%）",
     "display_range_left_percent": "显示区域：左（%）",
     "display_range_right_percent": "显示区域：右（%）",
     "display_range_top_percent": "显示区域：上（%）",
@@ -219,7 +217,6 @@ CONFIG_GROUPS = (
                 (
                     "editor_width_percent",
                     "editor_height_percent",
-                    "subject_list_width_percent",
                 ),
             ),
             (
@@ -764,7 +761,6 @@ class ConfigEditor:
                 raise ValueError("{} 必须在 10 到 100 之间".format(FIELD_LABELS[key]))
         for key in (
             "display_range_left_percent", "display_range_right_percent", "display_range_top_percent", "display_range_bottom_percent",
-            "subject_list_width_percent",
         ):
             if not 0 <= config[key] <= 100:
                 raise ValueError("{} 必须在 0 到 100 之间".format(FIELD_LABELS[key]))
