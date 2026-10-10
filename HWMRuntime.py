@@ -21,6 +21,7 @@ import subprocess
 import sys
 import time
 import tkinter as tk
+from ctypes import wintypes
 from pathlib import Path
 
 
@@ -34,6 +35,7 @@ SHUTDOWN_EVENTS = {
     "config_editor": "Local\\HomeworkConfigEditorShutdown",
     "homework_editor": "Local\\HomeworkProjectEditorShutdown",
     "subscription_manager": "Local\\HomeworkSubscriptionManagerShutdown",
+    "project_preview": "Local\\HomeworkProjectPreviewShutdown",
 }
 MAIN_CONTROL_EVENTS = {
     "exit": "Local\\HomeworkManagerExit",
@@ -73,6 +75,80 @@ def set_window_size_percent(window, width_percent, height_percent, lock_minimum=
     window.geometry("{}x{}".format(width, height))
     if lock_minimum:
         window.minsize(width, height)
+
+
+def place_window_bottom_right(window, margin_x=20, margin_y=20):
+    """Place a hidden window in its monitor's work area before showing it."""
+    window.withdraw()
+    window.update_idletasks()
+    if sys.platform != "win32":
+        width = window.winfo_width()
+        height = window.winfo_height()
+        x = max(0, window.winfo_screenwidth() - width - margin_x)
+        y = max(0, window.winfo_screenheight() - height - margin_y)
+        window.geometry("+{}+{}".format(x, y))
+        window.deiconify()
+        return
+
+    user32 = ctypes.windll.user32
+    user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    user32.GetAncestor.restype = wintypes.HWND
+    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    user32.GetWindowRect.restype = wintypes.BOOL
+    user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+    user32.MonitorFromWindow.restype = wintypes.HANDLE
+    user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    user32.GetMonitorInfoW.restype = wintypes.BOOL
+    user32.SetWindowPos.argtypes = [
+        wintypes.HWND,
+        wintypes.HWND,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.UINT,
+    ]
+    user32.SetWindowPos.restype = wintypes.BOOL
+
+    hwnd = user32.GetAncestor(wintypes.HWND(window.winfo_id()), 2)
+    if not hwnd:
+        raise ctypes.WinError()
+
+    owner = getattr(window, "master", None)
+    monitor_hwnd = hwnd
+    if owner is not None and owner.winfo_exists():
+        monitor_hwnd = user32.GetAncestor(wintypes.HWND(owner.winfo_id()), 2)
+        if not monitor_hwnd:
+            raise ctypes.WinError()
+    monitor = user32.MonitorFromWindow(monitor_hwnd, 2)
+    if not monitor:
+        raise ctypes.WinError()
+
+    class MonitorInfo(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("rcMonitor", wintypes.RECT),
+            ("rcWork", wintypes.RECT),
+            ("dwFlags", wintypes.DWORD),
+        ]
+
+    monitor_info = MonitorInfo()
+    monitor_info.cbSize = ctypes.sizeof(MonitorInfo)
+    if not user32.GetMonitorInfoW(monitor, ctypes.byref(monitor_info)):
+        raise ctypes.WinError()
+
+    rect = wintypes.RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        raise ctypes.WinError()
+    width = rect.right - rect.left
+    height = rect.bottom - rect.top
+    work_area = monitor_info.rcWork
+    x = max(work_area.left, work_area.right - width - margin_x)
+    y = max(work_area.top, work_area.bottom - height - margin_y)
+    flags = 0x0001 | 0x0004 | 0x0010  # SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+    if not user32.SetWindowPos(hwnd, None, x, y, 0, 0, flags):
+        raise ctypes.WinError()
+    window.deiconify()
 
 
 def set_window_icon(window, module_file, default_only=True):
@@ -267,5 +343,3 @@ def close_main_control_events(events):
         for event in events.values():
             if event:
                 ctypes.windll.kernel32.CloseHandle(event)
-
-

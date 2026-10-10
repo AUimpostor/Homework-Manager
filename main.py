@@ -39,6 +39,7 @@ from HWMRuntime import (
     request_shutdown,
     set_window_icon,
     set_window_size_percent,
+    place_window_bottom_right,
     wait_for_main_action,
 )
 from HWMSubscriptionService import maybe_send_scheduled
@@ -94,23 +95,20 @@ def python_executable():
     return str(executable if executable.exists() else sys.executable)
 
 
-def launch_component(component, preview=False):
+def launch_component(component):
     if getattr(sys, "frozen", False):
         command = [sys.executable, "--component", component]
-        if preview:
-            command.append("--preview")
     else:
         names = {
             "display": "HomeworkDisplay.py",
             "dashboard": "HWMConfigEditor.py",
             "homework_editor": "HomeworkEditor.py",
             "subscription_manager": "HWMSubscriptionManager.py",
+            "project_preview": "HWMProjectPreview.py",
             "main": "main.py",
         }
         target = APPLICATION_DIR / names[component]
         command = [python_executable(), str(target)]
-        if preview:
-            command.append("--preview")
 
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     return subprocess.Popen(command, cwd=str(APPLICATION_DIR), creationflags=creation_flags)
@@ -183,9 +181,10 @@ def show_school_class_prompt():
 
     buttons = ttk.Frame(outer)
     buttons.grid(row=4, column=0, columnspan=2, sticky="e", pady=(20, 0))
-    ttk.Button(buttons, text="退出 HWM", command=root.destroy).pack(side="right", padx=(8, 0))
+    ttk.Button(buttons, text="退出", command=root.destroy).pack(side="right", padx=(8, 0))
     ttk.Button(buttons, text="保存并继续", command=save_and_continue).pack(side="right")
     root.protocol("WM_DELETE_WINDOW", root.destroy)
+    place_window_bottom_right(root)
     root.after_idle(lambda: (root.lift(), root.focus_force(), school_entry.focus_set()))
     root.mainloop()
     return completed["value"]
@@ -206,7 +205,9 @@ def create_tray_image():
 
 
 def shutdown_components():
-    for component in ("config_editor", "homework_editor", "subscription_manager", "display"):
+    for component in (
+        "config_editor", "homework_editor", "subscription_manager", "project_preview", "display"
+    ):
         request_shutdown(component)
 
 
@@ -246,8 +247,8 @@ def main():
     def open_homework_editor(_icon=None, _item=None):
         launch_component("homework_editor")
 
-    def preview_homework(_icon=None, _item=None):
-        launch_component("dashboard", preview=True)
+    def open_project_preview(_icon=None, _item=None):
+        launch_component("project_preview")
 
     def exit_hwm(icon, _item=None):
         shutdown_components()
@@ -270,8 +271,8 @@ def main():
             open_homework_editor,
             default=default_editor,
         ),
-        pystray.MenuItem("预览项目", preview_homework),
-        pystray.MenuItem("退出 HWM", exit_hwm),
+        pystray.MenuItem("预览项目", open_project_preview),
+        pystray.MenuItem("退出", exit_hwm),
     )
     icon = pystray.Icon("HomeworkManager", create_tray_image(), "Homework Manager", menu)
 
@@ -305,6 +306,7 @@ def run_entry_point():
             "dashboard": "HWMConfigEditor",
             "homework_editor": "HomeworkEditor",
             "subscription_manager": "HWMSubscriptionManager",
+            "project_preview": "HWMProjectPreview",
         }
         if component not in component_modules:
             raise ValueError("未知组件: {}".format(component))
@@ -323,5 +325,3 @@ if __name__ == "__main__":
         except OSError:
             pass
         raise
-
-

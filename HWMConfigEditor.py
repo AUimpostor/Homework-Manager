@@ -34,6 +34,7 @@ from HWMRuntime import (
     create_shutdown_event,
     enable_high_dpi,
     enable_touch_keyboard,
+    place_window_bottom_right,
     set_window_size_percent,
     notify_config_saved,
     wait_for_config_reload,
@@ -61,21 +62,6 @@ EDITOR_FILE = (
     if getattr(sys, "frozen", False)
     else APPLICATION_DIR / "HomeworkEditor.py"
 )
-SUBJECT_NAMES = {
-    "chinese": "语文",
-    "maths": "数学",
-    "english": "英语",
-    "history": "历史",
-    "politics": "政治",
-    "physics": "物理",
-    "chemistry": "化学",
-    "biology": "生物",
-    "geography": "地理",
-    "it": "信息技术",
-    "pe": "体育",
-    "art": "美术",
-    "other": "其他",
-}
 INTEGER_FIELDS = (
     "title_width_permill", "title_length_permill", "title_font_size", "project_font_size", "secondary_project_font_size",
     "title_guide_line_width_permill",
@@ -316,6 +302,8 @@ class ConfigEditor:
             lock_minimum=True,
         )
         self.variables = {}
+        self.preview_menu = tk.Menu(self.root, tearoff=False)
+        self.preview_menu.add_command(label="预览项目", command=self.open_project_preview)
         self.color_previews = {}
         self.color_selectors = {}
         self.guide_width_widgets = []
@@ -394,6 +382,11 @@ class ConfigEditor:
         self.root.bind_all("<MouseWheel>", on_mousewheel)
         self.root.bind_all("<Button-4>", on_mousewheel)
         self.root.bind_all("<Button-5>", on_mousewheel)
+
+        # The dashboard has no homework list; expose the project preview from
+        # its right-click menu while keeping the existing preview button.
+        self.root.bind("<Button-3>", self.show_preview_menu)
+        self.root.bind("<Button-2>", self.show_preview_menu)
 
         ttk.Label(main, text="配置 Homework Manager", font=("Microsoft YaHei UI", 18, "bold")).grid(
             row=0, column=0, columnspan=2, sticky="w", pady=(0, 14)
@@ -508,7 +501,7 @@ class ConfigEditor:
             "<Button-1>",
             lambda _event: webbrowser.open("https://github.com/AUimpostor/Homework-Manager"),
         )
-        ttk.Label(about_title, text=" v1.5").pack(side="left")
+        ttk.Label(about_title, text=" v1.5.1 Beta").pack(side="left")
         row += 1
         ttk.Label(
             main,
@@ -553,10 +546,10 @@ class ConfigEditor:
         buttons = ttk.Frame(bottom)
         buttons.grid(row=0, column=1, sticky="e")
         ttk.Button(buttons, text="保存配置", command=self.save).pack(side="left")
-        ttk.Button(buttons, text="预览项目...", command=self.show_compact_homework).pack(
+        ttk.Button(buttons, text="推送管理器...", command=self.open_subscription_manager).pack(
             side="left", padx=(8, 0)
         )
-        ttk.Button(buttons, text="推送管理器...", command=self.open_subscription_manager).pack(
+        ttk.Button(buttons, text="预览项目", command=self.open_project_preview).pack(
             side="left", padx=(8, 0)
         )
         ttk.Button(buttons, text="项目编辑器...", command=self.open_homework_editor).pack(
@@ -589,87 +582,6 @@ class ConfigEditor:
 
     def exit_hwm(self):
         request_main_action("exit")
-
-    def show_compact_homework(self):
-        compact_window = tk.Toplevel(self.root)
-        set_window_icon(compact_window, __file__, default_only=False)
-        compact_window.title("预览项目")
-        screen_width = compact_window.winfo_screenwidth()
-        screen_height = compact_window.winfo_screenheight()
-        width = min(max(1, screen_width - 40), max(280, round(screen_width * 0.42)), 560)
-        height = min(max(1, screen_height - 80), max(240, round(screen_height * 0.78)), 820)
-        left = max(0, (screen_width - width) // 2)
-        top = max(0, (screen_height - height) // 2)
-        compact_window.geometry("{}x{}+{}+{}".format(width, height, left, top))
-        compact_window.minsize(min(280, width), min(240, height))
-        compact_window.transient(self.root)
-        compact_window.attributes("-topmost", True)
-        compact_window.lift()
-        compact_window.focus_force()
-        compact_window.rowconfigure(0, weight=1)
-        compact_window.columnconfigure(0, weight=1)
-
-        text_frame = ttk.Frame(compact_window)
-        text_frame.grid(row=0, column=0, sticky="nsew")
-        text_frame.rowconfigure(0, weight=1)
-        text_frame.columnconfigure(0, weight=1)
-        text_widget = tk.Text(
-            text_frame, wrap=tk.WORD, padx=12, pady=12, state="disabled",
-            font=("Microsoft YaHei UI", 14),
-        )
-        text_widget.grid(row=0, column=0, sticky="nsew")
-        text_scrollbar = ttk.Scrollbar(
-            text_frame, orient="vertical", command=text_widget.yview
-        )
-        text_scrollbar.grid(row=0, column=1, sticky="ns")
-        text_widget.configure(yscrollcommand=text_scrollbar.set)
-
-        def apply_font_size():
-            try:
-                current_config = self.read_config()
-            except ValueError:
-                current_config = self.config
-            alignment = "left" if current_config.get("display_range_left_percent", 55) < 50 else "right"
-            text_widget.configure(font=("Microsoft YaHei UI", 14))
-            text_widget.tag_configure(
-                "subject_heading",
-                font=("Microsoft YaHei UI", 18, "bold"),
-                justify=alignment,
-            )
-            text_widget.tag_configure("project", font=("Microsoft YaHei UI", 14), justify=alignment)
-            text_widget.tag_configure("secondary_project", font=("Microsoft YaHei UI", 11), justify=alignment)
-            text_widget.tag_configure("project_spacer", justify=alignment)
-
-        try:
-            preview_config = self.read_config()
-        except ValueError:
-            preview_config = self.config
-        preview_sections = []
-        for subject_work in self.data:
-            for subject, assignments in subject_work.items():
-                visible_assignments = [
-                    item
-                    for item in assignments
-                    if not item.get("hide", False)
-                ]
-                if not visible_assignments:
-                    continue
-                preview_sections.append((SUBJECT_NAMES.get(subject, subject), visible_assignments))
-        text_widget.configure(state="normal")
-        if preview_sections:
-            for subject_name, visible_assignments in preview_sections:
-                text_widget.insert(tk.END, "{}\n".format(subject_name), "subject_heading")
-                for item in visible_assignments:
-                    prefix = "" if item.get("ignore_prefix", False) else preview_config.get("project_prefix", "")
-                    suffix = "" if item.get("ignore_suffix", False) else preview_config.get("project_suffix", "")
-                    project = "{}{}{}".format(prefix, item.get("project", ""), suffix)
-                    tag = "secondary_project" if item.get("secondary", False) else "project"
-                    text_widget.insert(tk.END, "  {}\n".format(project), tag)
-                text_widget.insert(tk.END, "\n", "project_spacer")
-        else:
-            text_widget.insert("1.0", "（无可显示项目）")
-        apply_font_size()
-        text_widget.configure(state="disabled")
 
     def load_values(self):
         for key in DEFAULT_CONFIG:
@@ -824,14 +736,32 @@ class ConfigEditor:
         except OSError as error:
             messagebox.showerror("启动失败", str(error), parent=self.root)
 
+    def open_project_preview(self):
+        try:
+            if getattr(sys, "frozen", False):
+                subprocess.Popen([str(EDITOR_FILE), "--component", "project_preview"])
+            else:
+                subprocess.Popen([sys.executable, str(APPLICATION_DIR / "HWMProjectPreview.py")])
+        except OSError as error:
+            messagebox.showerror("启动失败", str(error), parent=self.root)
+
+    def show_preview_menu(self, event):
+        widget = event.widget
+        if isinstance(widget, (tk.Scrollbar,)):
+            return
+        try:
+            self.preview_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.preview_menu.grab_release()
+        return "break"
+
 
 def main():
     enable_high_dpi()
     root = tk.Tk()
     try:
-        editor = ConfigEditor(root)
-        if "--preview" in sys.argv:
-            root.after(0, editor.show_compact_homework)
+        ConfigEditor(root)
+        place_window_bottom_right(root)
     except (OSError, json.JSONDecodeError, ValueError) as error:
         messagebox.showerror("加载失败", str(error), parent=root)
         root.destroy()
@@ -841,5 +771,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
