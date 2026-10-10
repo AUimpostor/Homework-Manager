@@ -15,10 +15,13 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+import html
 import json
+import os
+import tempfile
 import threading
 import tkinter as tk
-from datetime import datetime
+import webbrowser
 from pathlib import Path
 from tkinter import messagebox, ttk
 
@@ -28,15 +31,19 @@ from HWMRuntime import (
     create_shutdown_event,
     enable_high_dpi,
     enable_touch_keyboard,
+    place_window_bottom_right,
     set_window_icon,
     set_window_size_percent,
     wait_for_shutdown,
 )
 from HWMSubscriptionService import (
+    APP_DIR,
     DEFAULTS,
+    SETTINGS_NAME,
     check_smtp_connection,
     load_settings,
     normalize_schedule_time,
+    render_push_content,
     save_settings,
     send_push,
 )
@@ -54,6 +61,7 @@ class SubscriptionManager:
         self.status = tk.StringVar(value="就绪")
         self.smtp_status = tk.StringVar(value="正在检测 SMTP 连接…")
         self._smtp_check_generation = 0
+        self.format_window = None
         self.vars = {}
         self._build()
         self._populate()
@@ -108,10 +116,10 @@ class SubscriptionManager:
         scrollbar.grid(row=0, column=1, sticky="ns", pady=(0, 8))
         self.listbox.configure(yscrollcommand=scrollbar.set)
         actions = ttk.Frame(accounts); actions.grid(row=1, column=0, sticky="ew")
-        ttk.Button(actions, text="添加账户...", command=self._add_account).pack(side="left", padx=(0,6))
-        self.edit_account_button = ttk.Button(actions, text="编辑选中账户...", command=self._edit_account, state="disabled")
+        ttk.Button(actions, text="添加...", command=self._add_account).pack(side="left", padx=(0,6))
+        self.edit_account_button = ttk.Button(actions, text="编辑...", command=self._edit_account, state="disabled")
         self.edit_account_button.pack(side="left", padx=(0,6))
-        self.delete_account_button = ttk.Button(actions, text="删除选中账户", command=self._delete, state="disabled")
+        self.delete_account_button = ttk.Button(actions, text="删除", command=self._delete, state="disabled")
         self.delete_account_button.pack(side="left", padx=(0,6))
         self.move_up_button = ttk.Button(actions, text="上置", command=self._move_up_account, state="disabled", width=4)
         self.move_up_button.pack(side="left", padx=(0, 0))
@@ -122,16 +130,13 @@ class SubscriptionManager:
         self.listbox.bind("<<ListboxSelect>>", self._update_buttons_state)
 
         right = ttk.Frame(frame); right.grid(row=1, column=1, rowspan=2, sticky="nsew")
-        right.columnconfigure(0, weight=1); right.rowconfigure(1, weight=1)
-        fmt = ttk.LabelFrame(right, text="推送格式", padding=10)
-        fmt.grid(row=1, column=0, sticky="nsew")
-        fmt.columnconfigure(1, weight=1); fmt.rowconfigure(2, weight=1)
-        ttk.Label(fmt, text="标题").grid(row=0, column=0, sticky="nw", padx=(0, 8), pady=4)
-        self.title_text = tk.Text(fmt, height=2, wrap="word"); self.title_text.grid(row=0, column=1, sticky="ew", pady=4)
-        ttk.Label(fmt, text="正文").grid(row=1, column=0, sticky="nw", padx=(0, 8), pady=4)
-        self.body_text = tk.Text(fmt, height=10, wrap="word"); self.body_text.grid(row=1, column=1, rowspan=2, sticky="nsew", pady=4)
-        ttk.Label(fmt, text="%date% 当前日期；%time% 当前时间\n%n% 昵称；%t% 称呼\n%s% 学校；%c% 班级\n%hw% 作业内容\n正文支持 HTML 和换行", justify="left", wraplength=300).grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 2))
-        ttk.Button(fmt, text="保存推送格式", command=self._save_format).grid(row=4, column=1, sticky="e", pady=(8, 0))
+        right.columnconfigure(0, weight=1)
+        ttk.Button(right, text="预览...", command=self._open_push_preview).grid(
+            row=2, column=0, sticky="e", pady=(0, 10)
+        )
+        ttk.Button(right, text="推送格式...", command=self._open_format_editor).grid(
+            row=1, column=0, sticky="e", pady=(0, 10)
+        )
 
         schedule = ttk.LabelFrame(right, text="定时推送", padding=10)
         schedule.grid(row=0, column=0, sticky="ew", pady=(0, 10))
@@ -156,10 +161,6 @@ class SubscriptionManager:
         except ValueError:
             saved_schedule_time = str(self.settings.get("schedule_time", "18:00:00"))
         self.time_var.set(saved_schedule_time)
-        self.title_text.delete("1.0", tk.END)
-        self.title_text.insert("1.0", self.settings.get("title_template", DEFAULTS["title_template"]))
-        self.body_text.delete("1.0", tk.END)
-        self.body_text.insert("1.0", self.settings.get("body_template", DEFAULTS["body_template"]))
         self.listbox.delete(0, tk.END)
         for p in self.settings.get("subscribers", []):
             disabled = p.get("enabled", True) is False
@@ -265,24 +266,24 @@ class SubscriptionManager:
         email = tk.StringVar(value=original.get("email", "") if original else "")
         custom = tk.StringVar(value="")
         presets = ("无", "同学", "妈妈", "爸爸", "爷爷", "奶奶", "家长", "老师")
-        preset = tk.StringVar(value=("无" if not salutation else salutation) if (not editing or salutation in presets or not salutation) else "自定义（填写）")
+        preset = tk.StringVar(value=("无" if not salutation else salutation) if (not editing or salutation in presets or not salutation) else "自定义")
         if editing and salutation not in presets and salutation:
             custom.set(salutation)
         ttk.Label(form, text="昵称").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=7)
         ttk.Entry(form, textvariable=nickname).grid(row=0, column=1, sticky="ew", pady=7)
         ttk.Label(form, text="称呼").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=7)
-        ttk.Combobox(form, textvariable=preset, state="readonly", values=("无", "同学", "妈妈", "爸爸", "爷爷", "奶奶", "家长", "老师", "自定义（填写）")).grid(row=1, column=1, sticky="ew", pady=7)
+        ttk.Combobox(form, textvariable=preset, state="readonly", values=("无", "同学", "妈妈", "爸爸", "爷爷", "奶奶", "家长", "老师", "自定义")).grid(row=1, column=1, sticky="ew", pady=7)
         ttk.Label(form, text="自定义称呼").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=7)
         custom_entry = ttk.Entry(form, textvariable=custom, state="disabled")
         custom_entry.grid(row=2, column=1, sticky="ew", pady=7)
         ttk.Label(form, text="电子邮箱").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=7)
         ttk.Entry(form, textvariable=email).grid(row=3, column=1, sticky="ew", pady=7)
-        preset.trace_add("write", lambda *_: custom_entry.configure(state="normal" if preset.get() == "自定义（填写）" else "disabled"))
-        custom_entry.configure(state="normal" if preset.get() == "自定义（填写）" else "disabled")
+        preset.trace_add("write", lambda *_: custom_entry.configure(state="normal" if preset.get() == "自定义" else "disabled"))
+        custom_entry.configure(state="normal" if preset.get() == "自定义" else "disabled")
         def save_account():
             name, address = nickname.get().strip(), email.get().strip()
-            greeting = custom.get().strip() if preset.get() == "自定义（填写）" else ("" if preset.get() == "无" else preset.get())
-            if not name or (preset.get() == "自定义（填写）" and not greeting) or "@" not in address:
+            greeting = custom.get().strip() if preset.get() == "自定义" else ("" if preset.get() == "无" else preset.get())
+            if not name or (preset.get() == "自定义" and not greeting) or "@" not in address:
                 messagebox.showwarning("信息不完整", "请填写昵称、称呼和有效的电子邮箱地址。", parent=dialog); return
             person = {"nickname": name, "salutation": greeting, "email": address,
                       "enabled": original.get("enabled", True) if editing else True}
@@ -301,6 +302,7 @@ class SubscriptionManager:
             self._log_account_action("编辑" if editing else "添加", person)
             dialog.destroy()
         ttk.Button(form, text="确定", command=save_account).grid(row=4, column=1, sticky="e", pady=(12, 0))
+        place_window_bottom_right(dialog)
 
     def _delete(self):
         selected = self.listbox.curselection()
@@ -360,12 +362,96 @@ class SubscriptionManager:
             except tk.TclError: pass
         threading.Thread(target=worker, daemon=True).start()
 
-    def _save_format(self):
+    def _open_format_editor(self):
+        if self.format_window is not None and self.format_window.winfo_exists():
+            self.format_window.lift()
+            self.format_window.focus_force()
+            return
+
+        dialog = tk.Toplevel(self.root)
+        self.format_window = dialog
+        set_window_icon(dialog, __file__)
+        dialog.title("编辑推送格式")
+        configure_tk_scaling(dialog)
+        set_window_size_percent(dialog, 50, 65)
+        dialog.minsize(
+            min(560, dialog.winfo_screenwidth()),
+            min(480, dialog.winfo_screenheight()),
+        )
+        dialog.transient(self.root)
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(2, weight=1)
+
+        form = ttk.Frame(dialog, padding=14)
+        form.grid(row=0, column=0, rowspan=3, sticky="nsew")
+        form.columnconfigure(1, weight=1)
+        form.rowconfigure(2, weight=1)
+        ttk.Label(form, text="标题").grid(row=0, column=0, sticky="nw", padx=(0, 8), pady=4)
+        title_text = tk.Text(form, height=2, wrap="word")
+        title_text.grid(row=0, column=1, sticky="ew", pady=4)
+        title_text.insert("1.0", self.settings.get("title_template", DEFAULTS["title_template"]))
+
+        ttk.Label(form, text="正文").grid(row=1, column=0, sticky="nw", padx=(0, 8), pady=4)
+        body_frame = ttk.Frame(form)
+        body_frame.grid(row=1, column=1, rowspan=2, sticky="nsew", pady=4)
+        body_frame.columnconfigure(0, weight=1)
+        body_frame.rowconfigure(0, weight=1)
+        body_text = tk.Text(body_frame, wrap="word")
+        body_text.grid(row=0, column=0, sticky="nsew")
+        body_scrollbar = ttk.Scrollbar(body_frame, orient="vertical", command=body_text.yview)
+        body_scrollbar.grid(row=0, column=1, sticky="ns")
+        body_text.configure(yscrollcommand=body_scrollbar.set)
+        body_text.insert("1.0", self.settings.get("body_template", DEFAULTS["body_template"]))
+
+        ttk.Label(
+            form,
+            text="%date% 当前日期；%time% 当前时间\n%n% 昵称；%t% 称呼\n%s% 学校；%c% 班级\n%hw% 作业内容\n格式：HTML",
+            justify="left",
+            wraplength=520,
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 2))
+        buttons = ttk.Frame(form)
+        buttons.grid(row=4, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        ttk.Button(buttons, text="取消", command=lambda: self._close_format_editor(dialog)).pack(
+            side="right", padx=(8, 0)
+        )
+        ttk.Button(buttons, text="打开配置文件", command=self._open_settings_file).pack(
+            side="right", padx=(8, 0)
+        )
+        ttk.Button(
+            buttons,
+            text="保存",
+            command=lambda: self._save_format(title_text, body_text, dialog),
+        ).pack(side="right")
+        dialog.protocol("WM_DELETE_WINDOW", lambda: self._close_format_editor(dialog))
+        place_window_bottom_right(dialog)
+
+    def _close_format_editor(self, dialog):
+        self.format_window = None
+        dialog.destroy()
+
+    def _open_settings_file(self):
+        path = APP_DIR / SETTINGS_NAME
         try:
-            self.settings["title_template"] = self.title_text.get("1.0", "end-1c")
-            self.settings["body_template"] = self.body_text.get("1.0", "end-1c")
-            save_settings(self.settings); self.status.set("推送格式已保存")
-        except OSError as error: messagebox.showerror("保存失败", str(error), parent=self.root)
+            if not path.is_file():
+                save_settings(self.settings)
+            os.startfile(str(path))
+        except OSError as error:
+            messagebox.showerror("无法打开配置文件", str(error), parent=self.format_window)
+
+    def _save_format(self, title_text, body_text, dialog):
+        previous_templates = {
+            key: self.settings.get(key, DEFAULTS[key])
+            for key in ("title_template", "body_template")
+        }
+        try:
+            self.settings["title_template"] = title_text.get("1.0", "end-1c")
+            self.settings["body_template"] = body_text.get("1.0", "end-1c")
+            save_settings(self.settings)
+            self.status.set("推送格式已保存")
+            self._close_format_editor(dialog)
+        except OSError as error:
+            self.settings.update(previous_templates)
+            messagebox.showerror("保存失败", str(error), parent=dialog)
 
     def _save_schedule(self):
         try:
@@ -381,11 +467,51 @@ class SubscriptionManager:
             save_settings(self.settings); self.status.set("定时推送设置已保存")
         except (OSError, ValueError) as error: messagebox.showerror("保存失败", str(error), parent=self.root)
 
+    def _open_push_preview(self):
+        selected = self.listbox.curselection()
+        subscribers = self.settings.get("subscribers", [])
+        if selected:
+            person = subscribers[selected[0]]
+        else:
+            person = next(
+                (item for item in subscribers if item.get("enabled", True) is not False),
+                {"nickname": "预览", "salutation": "您好", "email": ""},
+            )
+
+        try:
+            preview_person = dict(person)
+            preview_person["nickname"] = "（昵称）"
+            preview_person["salutation"] = "（称呼）"
+            title, _body, html_body = render_push_content(self.settings, preview_person)
+            safe_title = html.escape(title.replace("\r", " ").replace("\n", " "))
+            document = (
+                "<!DOCTYPE html>\n"
+                '<html lang="zh-CN"><head><meta charset="utf-8">'
+                '<meta name="viewport" content="width=device-width, initial-scale=1">'
+                "<title>{}</title></head><body>"
+                '<div style="font-family:Arial,\'Microsoft YaHei\',sans-serif;'
+                'margin:0 0 1em;padding-bottom:.75em;border-bottom:1px solid #ccc">'
+                "<strong>主题：</strong>{}</div>"
+                "{}"
+                "</body></html>"
+            ).format(safe_title, safe_title, html_body)
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                suffix=".html",
+                prefix="homework-manager-push-preview-",
+                delete=False,
+            ) as preview_file:
+                preview_file.write(document)
+                preview_path = Path(preview_file.name)
+            if not webbrowser.open(preview_path.as_uri()):
+                raise OSError("无法启动默认浏览器。")
+        except (OSError, ValueError, TypeError, KeyError, webbrowser.Error) as error:
+            messagebox.showerror("无法打开推送预览", str(error), parent=self.root)
+
     def _push(self):
         try:
             settings = self._read()
-            settings["title_template"] = self.title_text.get("1.0", "end-1c")
-            settings["body_template"] = self.body_text.get("1.0", "end-1c")
             active_count = sum(1 for p in settings["subscribers"] if p.get("enabled", True) is not False)
             if not active_count: raise ValueError("没有已启用的订阅账户可推送。")
             if not messagebox.askyesno("确认发出推送", "将立即向 {} 个订阅账户推送作业\n确认发送？".format(active_count), parent=self.root): return
@@ -409,6 +535,7 @@ def main():
     root = tk.Tk()
     try:
         SubscriptionManager(root)
+        place_window_bottom_right(root)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         messagebox.showerror("加载失败", str(error), parent=root)
         root.destroy()
@@ -418,5 +545,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

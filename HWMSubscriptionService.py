@@ -162,6 +162,84 @@ def homework_text(directory=APP_DIR):
                 sections.append((SUBJECT_NAMES.get(subject, subject), visible))
     return sections
 
+
+def render_push_content(settings, person, directory=APP_DIR):
+    sections = homework_text(directory)
+    app_config = load_config(Path(directory) / "config.json")
+    return _render_push_content(settings, person, sections, app_config)
+
+
+def render_homework_html(directory=APP_DIR):
+    """Render the exact HTML fragment substituted for %hw% in push emails."""
+    sections = homework_text(directory)
+    app_config = load_config(Path(directory) / "config.json")
+    return _render_homework_html(sections, app_config)
+
+
+def _render_homework_html(sections, app_config):
+    html_sections = []
+    for name, assignments in sections:
+        html_projects = []
+        for assignment in assignments:
+            prefix = "" if assignment.get("ignore_prefix", False) else app_config.get("project_prefix", "")
+            suffix = "" if assignment.get("ignore_suffix", False) else app_config.get("project_suffix", "")
+            text = "{}{}{}".format(prefix, assignment["project"], suffix)
+            font_size = "xx-small" if assignment.get("secondary", False) else "medium"
+            html_projects.append(
+                '<div style="font-size: {}">{}</div>'.format(font_size, html.escape(text))
+            )
+        html_sections.append(
+            '<strong style="font-size: large">{}</strong><br>{}<br>'.format(
+                html.escape(name), "".join(html_projects)
+            )
+        )
+
+    alignment = "left" if app_config.get("project_alignment") == "靠左" else "right"
+    content = "".join(html_sections) if html_sections else "（今天没有作业）"
+    return '<div style="text-align: {}">{}</div>'.format(alignment, content)
+
+
+def _render_push_content(settings, person, sections, app_config):
+    lines = []
+    for name, assignments in sections:
+        lines.append(name + "：")
+        for assignment in assignments:
+            prefix = "" if assignment.get("ignore_prefix", False) else app_config.get("project_prefix", "")
+            suffix = "" if assignment.get("ignore_suffix", False) else app_config.get("project_suffix", "")
+            text = "{}{}{}".format(prefix, assignment["project"], suffix)
+            lines.append("  " + text)
+        lines.append("")
+
+    now = datetime.now()
+    replacements = {
+        "%date%": now.strftime("%Y-%m-%d"),
+        "%time%": now.strftime("%H:%M"),
+        "%n%": str(person.get("nickname", "")),
+        "%t%": str(person.get("salutation", "")),
+        "%s%": str(app_config.get("school", "")),
+        "%c%": str(app_config.get("class", "")),
+        "%hw%": "\n".join(lines) if lines else "（今天没有作业）",
+    }
+    title = str(settings.get("title_template", DEFAULTS["title_template"]))
+    body_template = str(settings.get("body_template", DEFAULTS["body_template"]))
+    if not person.get("salutation"):
+        body_template = body_template.replace("%n% %t%，您好", "%n%，您好")
+    body = body_template
+    safe_body = body_template
+    for token, value in replacements.items():
+        title = title.replace(token, value)
+        body = body.replace(token, value)
+        if token != "%hw%":
+            safe_body = safe_body.replace(token, html.escape(str(value)))
+    hw_html = _render_homework_html(sections, app_config)
+    safe_body = safe_body.replace("%hw%", hw_html)
+    html_body = (
+        "<div style=\"font-family:Arial,'Microsoft YaHei',sans-serif;"
+        "line-height:1.65;white-space:pre-wrap\">{}</div>".format(safe_body)
+    )
+    return title, body, html_body
+
+
 def send_push(settings, directory=APP_DIR, recipients=None):
     source = settings["source"]
     required = ("host", "port", "email", "username", "password")
@@ -173,51 +251,14 @@ def send_push(settings, directory=APP_DIR, recipients=None):
         raise ValueError("没有可发送的订阅账户。")
     sections = homework_text(directory)
     app_config = load_config(Path(directory) / "config.json")
-    lines = []
-    html_sections = []
-    for name, assignments in sections:
-        lines.append(name + "：")
-        html_projects = []
-        for assignment in assignments:
-            prefix = "" if assignment.get("ignore_prefix", False) else app_config.get("project_prefix", "")
-            suffix = "" if assignment.get("ignore_suffix", False) else app_config.get("project_suffix", "")
-            text = "{}{}{}".format(prefix, assignment["project"], suffix)
-            lines.append("  " + text)
-            font_size = app_config.get("secondary_project_font_size", 11) if assignment.get("secondary", False) else app_config.get("project_font_size", 14)
-            html_projects.append('<div style="font-size: {}pt">{}</div>'.format(
-                html.escape(str(font_size)), html.escape(text)
-            ))
-        lines.append("")
-        html_sections.append("<strong>{}：</strong><br>{}<br>".format(
-            html.escape(name), "".join(html_projects)
-        ))
     for person in targets:
         msg = EmailMessage()
-        now = datetime.now()
-        replacements = {"%date%": now.strftime("%Y-%m-%d"), "%time%": now.strftime("%H:%M"),
-                        "%n%": str(person.get("nickname", "")), "%t%": str(person.get("salutation", "")),
-                        "%s%": str(app_config.get("school", "")), "%c%": str(app_config.get("class", "")),
-                        "%hw%": "\n".join(lines) if lines else "（今天没有作业）"}
-        title = str(settings.get("title_template", DEFAULTS["title_template"]))
-        body_template = str(settings.get("body_template", DEFAULTS["body_template"]))
-        if not person.get("salutation"):
-            body_template = body_template.replace("%n% %t%，您好", "%n%，您好")
-        body = body_template
-        safe_body = body_template
-        for token, value in replacements.items():
-            title = title.replace(token, value)
-            body = body.replace(token, value)
-            if token != "%hw%":
-                safe_body = safe_body.replace(token, html.escape(str(value)))
-        hw_alignment = "left" if app_config.get("project_alignment") == "靠左" else "right"
-        hw_content = "".join(html_sections) if html_sections else "（今天没有作业）"
-        hw_html = '<div style="text-align: {}">{}</div>'.format(hw_alignment, hw_content)
-        safe_body = safe_body.replace("%hw%", hw_html).replace("\n", "<br>")
+        title, body, html_body = _render_push_content(settings, person, sections, app_config)
         msg["Subject"] = title.replace("\r", " ").replace("\n", " ")
         msg["From"] = source["email"]
         msg["To"] = person["email"]
         msg.set_content(body)
-        msg.add_alternative("<div style=\"font-family:Arial,'Microsoft YaHei',sans-serif;line-height:1.65\">{}</div>".format(safe_body), subtype="html")
+        msg.add_alternative(html_body, subtype="html")
         with _smtp_session(source, timeout=30) as server:
             server.send_message(msg)
     return len(targets)
