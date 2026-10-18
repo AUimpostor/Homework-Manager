@@ -534,7 +534,7 @@ class ConfigEditor:
             "<Button-1>",
             lambda _event: webbrowser.open("https://github.com/AUimpostor/Homework-Manager"),
         )
-        ttk.Label(about_title, text=" v1.5.1 Beta 2").pack(side="left")
+        ttk.Label(about_title, text=" v1.5.1 Beta 1").pack(side="left")
         row += 1
         ttk.Label(
             main,
@@ -845,7 +845,7 @@ class ConfigEditor:
             backup = backups[selection[0]]
             try:
                 restored_config = load_config(backup)
-                create_config_backup(".BAK")
+                create_config_backup(".json.bak")
                 shutil.copy2(backup, CONFIG_FILE)
                 self.config = restored_config
                 self.data = load_homework_data(HOMEWORK_FILE, CONFIG_FILE)
