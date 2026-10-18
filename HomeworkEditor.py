@@ -31,6 +31,7 @@ from HWMRuntime import (
     enable_high_dpi,
     enable_touch_keyboard,
     notify_config_saved,
+    place_window_bottom_right,
     set_window_size_percent,
     wait_for_config_reload,
     wait_for_shutdown,
@@ -259,6 +260,10 @@ class HomeworkEditor:
         self.move_up_button.pack(side="left", padx=(0, 2))
         self.move_down_button = ttk.Button(buttons, text="下置", command=self.move_down_assignment, state="disabled", width=4)
         self.move_down_button.pack(side="left")
+        self.toggle_all_button = ttk.Button(
+            buttons, text="隐藏所有", command=self.toggle_all_assignments
+        )
+        self.toggle_all_button.pack(side="left", padx=(8, 0))
 
         bottom = ttk.Frame(main)
         bottom.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
@@ -324,7 +329,13 @@ class HomeworkEditor:
         total = len(self.homework.get(subject, [])) if subject else 0
         has_subject = bool(subject)
         has_selection = bool(selection and subject)
+        assignments = self.homework.get(subject, []) if subject else []
+        has_hidden = any(assignment["hide"] for assignment in assignments)
         self.add_button.configure(state="normal" if has_subject else "disabled")
+        self.toggle_all_button.configure(
+            text="显示所有" if has_hidden else "隐藏所有",
+            state="normal" if assignments else "disabled",
+        )
         self.edit_button.configure(state="normal" if has_selection else "disabled")
         self.delete_button.configure(state="normal" if has_selection else "disabled")
         if has_selection:
@@ -422,6 +433,7 @@ class HomeworkEditor:
         ttk.Button(buttons, text="确定", command=save_assignment).pack(side="right")
         dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
         dialog.after_idle(editor.focus_set)
+        place_window_bottom_right(dialog)
 
     def add_assignment(self):
         subject = self.selected_subject.get()
@@ -453,6 +465,20 @@ class HomeworkEditor:
         self.status_text.set(
             "{}项目项".format(state)
         )
+
+    def toggle_all_assignments(self):
+        subject = self.selected_subject.get()
+        assignments = self.homework.get(subject, []) if subject else []
+        if not assignments:
+            return
+        show_all = any(assignment["hide"] for assignment in assignments)
+        now = datetime.now().isoformat(timespec="seconds")
+        for assignment in assignments:
+            if assignment["hide"] != (not show_all):
+                assignment["hide"] = not show_all
+                assignment["date_modified"] = now
+        self.refresh_assignments()
+        self.status_text.set("已显示当前科目的所有项目" if show_all else "已隐藏当前科目的所有项目")
 
     def delete_assignment(self):
         selection = self.assignment_list.curselection()
@@ -507,6 +533,7 @@ def main():
     root = tk.Tk()
     try:
         HomeworkEditor(root)
+        place_window_bottom_right(root)
     except (OSError, json.JSONDecodeError, ValueError) as error:
         messagebox.showerror("加载失败", str(error), parent=root)
         root.destroy()
@@ -516,5 +543,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
