@@ -16,13 +16,16 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import json
+import ctypes
 import os
+import shutil
 import subprocess
 import sys
 import tkinter as tk
 import threading
 import webbrowser
 import winreg
+from datetime import datetime
 from pathlib import Path
 from tkinter import colorchooser, messagebox, ttk
 from HWMRuntime import (
@@ -249,7 +252,37 @@ def load_document():
 
 
 def save_document(config):
+    create_config_backup()
     save_config(CONFIG_FILE, config)
+
+
+def create_config_backup(extension=".json.bak"):
+    if not CONFIG_FILE.is_file():
+        return None
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    backup = CONFIG_FILE.with_name("config_{}{}".format(timestamp, extension))
+    shutil.copy2(CONFIG_FILE, backup)
+    hide_file_in_explorer(backup)
+    return backup
+
+
+def hide_file_in_explorer(path):
+    if sys.platform != "win32":
+        return
+    kernel32 = ctypes.windll.kernel32
+    attributes = kernel32.GetFileAttributesW(str(path))
+    if attributes == -1:
+        raise ctypes.WinError()
+    if not kernel32.SetFileAttributesW(str(path), attributes | 0x2):
+        raise ctypes.WinError()
+
+
+def list_config_backups():
+    return sorted(
+        (path for path in RESOURCE_DIR.glob("config_*.bak") if path.is_file()),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
 
 
 def get_display_startup_command():
@@ -501,7 +534,7 @@ class ConfigEditor:
             "<Button-1>",
             lambda _event: webbrowser.open("https://github.com/AUimpostor/Homework-Manager"),
         )
-        ttk.Label(about_title, text=" v1.5.1 Beta").pack(side="left")
+        ttk.Label(about_title, text=" v1.5.1 Beta 2").pack(side="left")
         row += 1
         ttk.Label(
             main,
@@ -536,30 +569,58 @@ class ConfigEditor:
         )
         details_link.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 8))
         details_link.bind("<Button-1>", lambda _event: self.open_license_folder())
+        row += 1
+        recovery_buttons = ttk.Frame(main)
+        recovery_buttons.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 2))
+        ttk.Button(
+            recovery_buttons,
+            text="恢复默认配置",
+            command=self.restore_default_config,
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            recovery_buttons,
+            text="回滚配置",
+            command=self.rollback_config,
+        ).pack(side="left", padx=4)
 
         bottom = ttk.Frame(outer)
         bottom.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         bottom.columnconfigure(0, weight=1)
+
         ttk.Label(bottom, textvariable=self.status).grid(
             row=0, column=0, sticky="w"
         )
+
         buttons = ttk.Frame(bottom)
         buttons.grid(row=0, column=1, sticky="e")
-        ttk.Button(buttons, text="保存配置", command=self.save).pack(side="left")
-        ttk.Button(buttons, text="推送管理器...", command=self.open_subscription_manager).pack(
-            side="left", padx=(8, 0)
-        )
-        ttk.Button(buttons, text="预览项目", command=self.open_project_preview).pack(
-            side="left", padx=(8, 0)
-        )
-        ttk.Button(buttons, text="项目编辑器...", command=self.open_homework_editor).pack(
-            side="right", padx=(8, 0)
-        )
+        ttk.Button(
+            buttons,
+            text="保存配置",
+            command=self.save,
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            buttons,
+            text="推送管理器...",
+            command=self.open_subscription_manager,
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            buttons,
+            text="预览项目",
+            command=self.open_project_preview,
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            buttons,
+            text="项目编辑器...",
+            command=self.open_homework_editor,
+        ).pack(side="left", padx=4)
+
         control_buttons = ttk.Frame(outer)
         control_buttons.grid(row=2, column=0, columnspan=2, sticky="e", pady=(4, 0))
         ttk.Button(
-            control_buttons, text="退出", command=self.exit_hwm
-        ).pack(side="left")
+            control_buttons,
+            text="退出",
+            command=self.exit_hwm,
+        ).pack(side="left", padx=4)
 
     def open_license_file(self, filename):
         path = LICENSE_BUNDLE_DIR / filename
@@ -717,6 +778,127 @@ class ConfigEditor:
         self.status.set("已保存到 config.json")
         notify_config_saved()
         self.root.after_idle(self.reload_from_disk)
+
+    def restore_default_config(self):
+        if not messagebox.askyesno(
+            "恢复默认配置",
+            "这会覆盖当前所有的仪表盘配置，包含：\n首选项、显示器格式、显示\n你确定吗？",
+            parent=self.root,
+        ):
+            return
+        config = DEFAULT_CONFIG.copy()
+        try:
+            save_document(config)
+            update_display_startup(config["auto_start_display"])
+        except (OSError, TypeError, ValueError, winreg.error) as error:
+            messagebox.showerror("恢复失败", str(error), parent=self.root)
+            return
+        self.config = config
+        self.load_values()
+        self.status.set("已恢复默认配置并保存到 config.json")
+        notify_config_saved()
+
+    def rollback_config(self):
+        backups = list_config_backups()
+        dialog = tk.Toplevel(self.root)
+        set_window_icon(dialog, __file__)
+        dialog.title("回滚配置")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        configure_tk_scaling(dialog)
+        set_window_size_percent(dialog, 35, 35)
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(1, weight=1)
+
+        ttk.Label(dialog, text="选择要恢复的配置备份：").grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 6)
+        )
+        backup_list = tk.Listbox(dialog, exportselection=False)
+        backup_list.grid(row=1, column=0, sticky="nsew", padx=(10, 0), pady=(0, 8))
+        scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=backup_list.yview)
+        scrollbar.grid(row=1, column=1, sticky="ns", padx=(0, 10), pady=(0, 8))
+        backup_list.configure(yscrollcommand=scrollbar.set)
+        for backup in backups:
+            backup_list.insert(tk.END, backup.name)
+        if backups:
+            backup_list.selection_set(0)
+            backup_list.activate(0)
+        else:
+            backup_list.insert(tk.END, "没有可用的配置备份")
+            backup_list.configure(state="disabled")
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=2, column=0, columnspan=2, sticky="e", padx=10, pady=(0, 10))
+
+        def restore_selected():
+            selection = backup_list.curselection()
+            if not selection or not backups:
+                return
+            backup = backups[selection[0]]
+            try:
+                restored_config = load_config(backup)
+                create_config_backup(".BAK")
+                shutil.copy2(backup, CONFIG_FILE)
+                self.config = restored_config
+                self.data = load_homework_data(HOMEWORK_FILE, CONFIG_FILE)
+                self.load_values()
+                update_display_startup(self.config["auto_start_display"])
+            except (OSError, TypeError, ValueError, json.JSONDecodeError, winreg.error) as error:
+                messagebox.showerror("回滚失败", str(error), parent=dialog)
+                return
+            self.status.set("已回滚配置：{}".format(backup.name))
+            notify_config_saved()
+            dialog.destroy()
+
+        def delete_selected():
+            selection = backup_list.curselection()
+            if not selection or not backups:
+                return
+            if not messagebox.askyesno(
+                "确认删除",
+                "你确定要删除此配置备份吗？\n此操作不可恢复！",
+                parent=dialog,
+            ):
+                return
+            backup = backups[selection[0]]
+            try:
+                backup.unlink()
+            except OSError as error:
+                messagebox.showerror("删除失败", str(error), parent=dialog)
+                return
+            backups[:] = list_config_backups()
+            backup_list.configure(state="normal")
+            backup_list.delete(0, tk.END)
+            for remaining_backup in backups:
+                backup_list.insert(tk.END, remaining_backup.name)
+            if backups:
+                new_index = min(selection[0], len(backups) - 1)
+                backup_list.selection_set(new_index)
+                backup_list.activate(new_index)
+            else:
+                backup_list.insert(tk.END, "没有可用的配置备份")
+                backup_list.configure(state="disabled")
+                rollback_button.configure(state="disabled")
+                delete_button.configure(state="disabled")
+
+        ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side="right")
+        rollback_button = ttk.Button(
+            buttons,
+            text="回滚",
+            command=restore_selected,
+            state="normal" if backups else "disabled",
+        )
+        rollback_button.pack(side="right", padx=(0, 8))
+        delete_button = ttk.Button(
+            buttons,
+            text="删除",
+            command=delete_selected,
+            state="normal" if backups else "disabled",
+        )
+        delete_button.pack(side="right", padx=(0, 8))
+        backup_list.bind("<Double-Button-1>", lambda _event: restore_selected())
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        place_window_bottom_right(dialog)
 
     def open_homework_editor(self):
         try:
