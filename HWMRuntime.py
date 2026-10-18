@@ -39,6 +39,7 @@ SHUTDOWN_EVENTS = {
 }
 MAIN_CONTROL_EVENTS = {
     "exit": "Local\\HomeworkManagerExit",
+    "restart": "Local\\HomeworkManagerRestart",
 }
 
 

@@ -17,6 +17,7 @@
 
 import ctypes
 import importlib
+import os
 import subprocess
 import sys
 import threading
@@ -37,6 +38,7 @@ from HWMRuntime import (
     enable_high_dpi,
     enable_touch_keyboard,
     request_shutdown,
+    SHUTDOWN_EVENTS,
     set_window_icon,
     set_window_size_percent,
     place_window_bottom_right,
@@ -97,7 +99,9 @@ def python_executable():
 
 def launch_component(component):
     if getattr(sys, "frozen", False):
-        command = [sys.executable, "--component", component]
+        command = [sys.executable] if component == "main" else [
+            sys.executable, "--component", component
+        ]
     else:
         names = {
             "display": "HomeworkDisplay.py",
@@ -112,6 +116,65 @@ def launch_component(component):
 
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     return subprocess.Popen(command, cwd=str(APPLICATION_DIR), creationflags=creation_flags)
+
+
+def wait_for_process_exit(process_id):
+    if sys.platform != "win32":
+        while True:
+            try:
+                os.kill(process_id, 0)
+            except OSError:
+                return
+            time.sleep(0.1)
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_bool, ctypes.c_ulong]
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    process = kernel32.OpenProcess(0x00100000, False, process_id)  # SYNCHRONIZE
+    if not process:
+        # ERROR_INVALID_PARAMETER means the old process has already exited.
+        if ctypes.windll.kernel32.GetLastError() == 87:
+            return
+        raise ctypes.WinError()
+    try:
+        kernel32.WaitForSingleObject(process, 0xFFFFFFFF)
+    finally:
+        kernel32.CloseHandle(process)
+
+
+def wait_for_components_exit():
+    if sys.platform != "win32":
+        return
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenEventW.argtypes = [ctypes.c_ulong, ctypes.c_bool, ctypes.c_wchar_p]
+    kernel32.OpenEventW.restype = ctypes.c_void_p
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    while True:
+        running_components = []
+        for component, event_name in SHUTDOWN_EVENTS.items():
+            event = kernel32.OpenEventW(0x00100000, False, event_name)  # SYNCHRONIZE
+            if event:
+                running_components.append(component)
+                kernel32.CloseHandle(event)
+        if not running_components:
+            return
+        time.sleep(0.1)
+
+
+def start_restart_helper():
+    process_id = os.getpid()
+    if getattr(sys, "frozen", False):
+        command = [sys.executable, "--restart-after", str(process_id)]
+    else:
+        command = [
+            python_executable(), str(Path(__file__).resolve()),
+            "--restart-after", str(process_id),
+        ]
+    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    subprocess.Popen(command, cwd=str(APPLICATION_DIR), creationflags=creation_flags)
 
 
 def ensure_display_running():
@@ -250,14 +313,24 @@ def main():
     def open_project_preview(_icon=None, _item=None):
         launch_component("project_preview")
 
-    def exit_hwm(icon, _item=None):
+    def stop_hwm(icon, restart=False):
+        if restart:
+            start_restart_helper()
         shutdown_components()
         icon.stop()
+
+    def exit_hwm(icon, _item=None):
+        stop_hwm(icon)
+
+    def restart_hwm(icon, _item=None):
+        stop_hwm(icon, restart=True)
 
     def wait_for_control_action():
         action = wait_for_main_action(main_control_events)
         if action == "exit":
             exit_hwm(icon)
+        elif action == "restart":
+            restart_hwm(icon)
 
     def on_icon_stop(_icon):
         close_main_control_events(main_control_events)
@@ -272,6 +345,7 @@ def main():
             default=default_editor,
         ),
         pystray.MenuItem("预览项目", open_project_preview),
+        pystray.MenuItem("重启程序", restart_hwm),
         pystray.MenuItem("退出", exit_hwm),
     )
     icon = pystray.Icon("HomeworkManager", create_tray_image(), "Homework Manager", menu)
@@ -296,6 +370,15 @@ def main():
 
 
 def run_entry_point():
+    if "--restart-after" in sys.argv:
+        index = sys.argv.index("--restart-after")
+        if index + 1 >= len(sys.argv):
+            raise ValueError("缺少需要等待退出的进程编号")
+        wait_for_process_exit(int(sys.argv[index + 1]))
+        wait_for_components_exit()
+        launch_component("main")
+        return
+
     if getattr(sys, "frozen", False) and "--component" in sys.argv:
         component_index = sys.argv.index("--component")
         if component_index + 1 >= len(sys.argv):

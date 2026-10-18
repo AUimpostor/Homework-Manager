@@ -618,6 +618,11 @@ class ConfigEditor:
         control_buttons.grid(row=2, column=0, columnspan=2, sticky="e", pady=(4, 0))
         ttk.Button(
             control_buttons,
+            text="重启程序",
+            command=self.restart_hwm,
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            control_buttons,
             text="退出",
             command=self.exit_hwm,
         ).pack(side="left", padx=4)
@@ -643,6 +648,9 @@ class ConfigEditor:
 
     def exit_hwm(self):
         request_main_action("exit")
+
+    def restart_hwm(self):
+        request_main_action("restart")
 
     def load_values(self):
         for key in DEFAULT_CONFIG:
