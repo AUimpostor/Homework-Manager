@@ -18,6 +18,7 @@
 import json
 import sys
 import threading
+import copy
 from datetime import datetime
 import tkinter as tk
 from pathlib import Path
@@ -63,11 +64,6 @@ SUBJECT_NAMES = {
     "art": "美术",
     "other": "其他",
 }
-
-
-
-
-
 
 def load_homework():
     homework = {}
@@ -142,6 +138,8 @@ class HomeworkEditor:
         )
         self.selected_subject = tk.StringVar()
         self.status_text = tk.StringVar(value="就绪")
+        self.undo_stack = []
+        self.redo_stack = []
 
         self.create_widgets()
         self.refresh_subjects()
@@ -170,9 +168,9 @@ class HomeworkEditor:
     def reload_config(self):
         try:
             _, self.config = load_homework()
-            self.status_text.set("已从文件刷新项目和配置")
+            self._context_status("已从文件刷新配置")
         except (OSError, json.JSONDecodeError, ValueError) as error:
-            self.status_text.set("刷新配置失败：{}".format(error))
+            self._context_status("刷新配置失败（{}）".format(error))
 
     @staticmethod
     def _make_mousewheel_handler(listbox):
@@ -259,19 +257,76 @@ class HomeworkEditor:
         self.move_up_button = ttk.Button(buttons, text="上置", command=self.move_up_assignment, state="disabled", width=4)
         self.move_up_button.pack(side="left", padx=(0, 2))
         self.move_down_button = ttk.Button(buttons, text="下置", command=self.move_down_assignment, state="disabled", width=4)
-        self.move_down_button.pack(side="left")
-        self.toggle_all_button = ttk.Button(
-            buttons, text="隐藏所有", command=self.toggle_all_assignments
-        )
-        self.toggle_all_button.pack(side="left", padx=(8, 0))
+        self.move_down_button.pack(side="left", padx=(0, 4))
+        self.toggle_all_button = ttk.Button(buttons, text="隐藏所有", command=self.toggle_all_assignments)
+        self.toggle_all_button.pack(side="left")
 
         bottom = ttk.Frame(main)
         bottom.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         bottom.columnconfigure(0, weight=1)
         ttk.Label(bottom, textvariable=self.status_text).grid(row=0, column=0, sticky="w")
+        self.undo_button = ttk.Button(bottom, text="撤销", command=self.undo, state="disabled")
+        self.undo_button.grid(row=0, column=1, sticky="e", padx=(0, 4))
+        self.redo_button = ttk.Button(bottom, text="恢复", command=self.redo, state="disabled")
+        self.redo_button.grid(row=0, column=2, sticky="e", padx=(0, 4))
         ttk.Button(bottom, text="保存项目", command=self.save).grid(
-            row=0, column=2, sticky="e"
+            row=0, column=3, sticky="e"
         )
+
+    @staticmethod
+    def _subject_name(subject):
+        return SUBJECT_NAMES.get(subject, subject or "未选择科目")
+
+    def _context_status(self, action, subject=None, project=None):
+        subject = subject if subject is not None else self.selected_subject.get()
+        if project is None and subject:
+            selection = self.assignment_list.curselection()
+            assignments = self.homework.get(subject, [])
+            if selection and selection[0] < len(assignments):
+                project = assignments[selection[0]]["project"]
+        project = project or "全部项目"
+        self.status_text.set(
+            "{}：{}（{}）".format(
+                action, project, self._subject_name(subject)
+            )
+        )
+
+    def _record_undo(self):
+        self.undo_stack.append(copy.deepcopy(self.homework))
+        self.redo_stack.clear()
+        self._update_history_buttons()
+
+    def _update_history_buttons(self):
+        self.undo_button.configure(state="normal" if self.undo_stack else "disabled")
+        self.redo_button.configure(state="normal" if self.redo_stack else "disabled")
+
+    def undo(self):
+        if not self.undo_stack:
+            return
+        subject = self.selected_subject.get()
+        selection = self.assignment_list.curselection()
+        index = selection[0] if selection else None
+        self.redo_stack.append(copy.deepcopy(self.homework))
+        self.homework = self.undo_stack.pop()
+        self.refresh_subjects(subject)
+        if subject in self.homework and index is not None and self.homework[subject]:
+            self.refresh_assignments(index)
+        self._update_history_buttons()
+        self._context_status("已撤销")
+
+    def redo(self):
+        if not self.redo_stack:
+            return
+        subject = self.selected_subject.get()
+        selection = self.assignment_list.curselection()
+        index = selection[0] if selection else None
+        self.undo_stack.append(copy.deepcopy(self.homework))
+        self.homework = self.redo_stack.pop()
+        self.refresh_subjects(subject)
+        if subject in self.homework and index is not None and self.homework[subject]:
+            self.refresh_assignments(index)
+        self._update_history_buttons()
+        self._context_status("已恢复")
 
     def refresh_subjects(self, subject_to_select=None):
         subjects = list(self.homework)
@@ -404,14 +459,16 @@ class HomeworkEditor:
                 return
             now = datetime.now().isoformat(timespec="seconds")
             if editing:
+                self._record_undo()
                 self.homework[subject][assignment_index]["project"] = value
                 self.homework[subject][assignment_index]["ignore_prefix"] = ignore_prefix_var.get()
                 self.homework[subject][assignment_index]["ignore_suffix"] = ignore_suffix_var.get()
                 self.homework[subject][assignment_index]["secondary"] = secondary_var.get()
                 self.homework[subject][assignment_index]["date_modified"] = now
                 selected_index = assignment_index
-                self.status_text.set("已编辑项目，请注意保存")
+                self._context_status("已编辑", subject, value)
             else:
+                self._record_undo()
                 self.homework[subject].append({
                     "project": value,
                     "hide": False,
@@ -421,7 +478,7 @@ class HomeworkEditor:
                     "date_modified": now,
                 })
                 selected_index = len(self.homework[subject]) - 1
-                self.status_text.set("已添加项目，请注意保存")
+                self._context_status("已添加", subject, value)
             self.refresh_assignments(selected_index)
             dialog.destroy()
 
@@ -458,13 +515,12 @@ class HomeworkEditor:
             return
         index = selection[0]
         assignment = self.homework[subject][index]
+        self._record_undo()
         assignment["hide"] = not assignment["hide"]
         assignment["date_modified"] = datetime.now().isoformat(timespec="seconds")
         self.refresh_assignments(index)
         state = "已隐藏" if assignment["hide"] else "已显示"
-        self.status_text.set(
-            "{}项目项".format(state)
-        )
+        self._context_status(state, subject, assignment["project"])
 
     def toggle_all_assignments(self):
         subject = self.selected_subject.get()
@@ -472,13 +528,16 @@ class HomeworkEditor:
         if not assignments:
             return
         show_all = any(assignment["hide"] for assignment in assignments)
+        self._record_undo()
         now = datetime.now().isoformat(timespec="seconds")
         for assignment in assignments:
             if assignment["hide"] != (not show_all):
                 assignment["hide"] = not show_all
                 assignment["date_modified"] = now
         self.refresh_assignments()
-        self.status_text.set("已显示当前科目的所有项目" if show_all else "已隐藏当前科目的所有项目")
+        self._context_status(
+            "已显示" if show_all else "已隐藏", subject, "全部项目"
+        )
 
     def delete_assignment(self):
         selection = self.assignment_list.curselection()
@@ -489,9 +548,11 @@ class HomeworkEditor:
         if not messagebox.askyesno("确认删除", "确定删除选中的项目项吗？", parent=self.root):
             return
         index = selection[0]
+        project = self.homework[subject][index]["project"]
+        self._record_undo()
         del self.homework[subject][index]
         self.refresh_assignments(index)
-        self.status_text.set("已删除项目项")
+        self._context_status("已删除", subject, project)
 
     def _move_assignment(self, direction):
         selection = self.assignment_list.curselection()
@@ -503,13 +564,15 @@ class HomeworkEditor:
         new_index = index + direction
         if new_index < 0 or new_index >= len(assignments):
             return
+        project = assignments[index]["project"]
+        self._record_undo()
         assignments[index], assignments[new_index] = assignments[new_index], assignments[index]
         now = datetime.now().isoformat(timespec="seconds")
         assignments[index]["date_modified"] = now
         assignments[new_index]["date_modified"] = now
         self.refresh_assignments(new_index)
         state = "已上置" if direction < 0 else "已下置"
-        self.status_text.set("{}项目项".format(state))
+        self._context_status(state, subject, project)
 
     def move_up_assignment(self):
         self._move_assignment(-1)
@@ -523,7 +586,7 @@ class HomeworkEditor:
         except (OSError, TypeError, ValueError) as error:
             messagebox.showerror("保存失败", str(error), parent=self.root)
             return
-        self.status_text.set("作业项目已保存到 homework.json")
+        self._context_status("已保存到 homework.json")
         notify_config_saved()
         messagebox.showinfo("保存成功", "项目列表已保存到 homework.json。", parent=self.root)
 
