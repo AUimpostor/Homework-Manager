@@ -27,6 +27,7 @@ import webbrowser
 import winreg
 from datetime import datetime
 from pathlib import Path
+from PIL import Image, ImageTk
 from tkinter import colorchooser, messagebox, ttk
 from HWMRuntime import (
     close_config_reload_event,
@@ -246,6 +247,7 @@ STARTUP_VALUE_NAME = "main"
 
 
 def load_document():
+    ensure_config_file_visible()
     config = load_config(CONFIG_FILE)
     data = load_homework_data(HOMEWORK_FILE, CONFIG_FILE)
     return config, data
@@ -274,6 +276,18 @@ def hide_file_in_explorer(path):
     if attributes == -1:
         raise ctypes.WinError()
     if not kernel32.SetFileAttributesW(str(path), attributes | 0x2):
+        raise ctypes.WinError()
+
+
+def ensure_config_file_visible():
+    """Keep the active config.json discoverable; only backup copies are hidden."""
+    if sys.platform != "win32" or not CONFIG_FILE.is_file():
+        return
+    kernel32 = ctypes.windll.kernel32
+    attributes = kernel32.GetFileAttributesW(str(CONFIG_FILE))
+    if attributes == -1:
+        raise ctypes.WinError()
+    if attributes & 0x2 and not kernel32.SetFileAttributesW(str(CONFIG_FILE), attributes & ~0x2):
         raise ctypes.WinError()
 
 
@@ -522,6 +536,13 @@ class ConfigEditor:
         row += 1
         about_title = ttk.Frame(main)
         about_title.grid(row=row, column=0, columnspan=2, sticky="w", pady=2)
+        icon_path = Path(getattr(sys, "_MEIPASS", RESOURCE_DIR)) / "hwm.ico"
+        with Image.open(icon_path) as icon_file:
+            icon_file.seek(0)
+            icon_image = icon_file.convert("RGBA")
+            icon_image.thumbnail((64, 64), Image.Resampling.LANCZOS)
+            self.about_icon = ImageTk.PhotoImage(icon_image, master=about_title)
+        ttk.Label(about_title, image=self.about_icon).pack(side="left", padx=(0, 6))
         app_name_label = ttk.Label(
             about_title,
             text="Homework Manager",

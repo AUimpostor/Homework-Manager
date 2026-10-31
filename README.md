@@ -8,14 +8,14 @@ A simple homework display tool for digital teaching
 
 在仪表盘中可启动推送管理器，推送管理器可以通过电子邮箱将作业推送到订阅账户
 
-此程序在完成首次启动配置后，才会在程序所在目录创建 JSON 文件用作存储数据；若在首次启动配置时直接退出，则不会创建 JSON 文件
+完成首次启动配置后，程序会在程序所在目录保存 `config.json`（程序设置）、`homework.json`（作业内容）和 `subscriptions.json`（订阅账户）。若在首次启动配置时直接退出，则不会创建这些数据文件。修改配置前会创建隐藏的 `config_时间戳.json.bak` 备份；正式配置文件 `config.json` 保持可见。
 
 /
 Opening `Homework Manager.exe`\(`main.py`\), will start this program and add it to the system tray. After that, please right-click the program in the system tray to access the context menu
 
 You can start the Subscription Manager from the dashboard, and the Subscription Manager emails homeworks to subscribed accounts
 
-After the first-launch setup is completed, this program creates JSON files in the program directory for data storage. Quitting during that setup creates no JSON files
+After first-launch setup, the program stores `config.json` (settings), `homework.json` (homework), and `subscriptions.json` (subscriptions) in the program directory. Quitting during setup creates none of these data files. Before changing settings, it creates a hidden `config_timestamp.json.bak` backup; the active `config.json` remains visible.
 
 ## 运行和构建 / Run and build
 - 安装 Python 3.10 或更新版本，并确保支持 Tcl/Tk

@@ -214,7 +214,7 @@ def show_school_class_prompt():
     ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
     ttk.Label(
         outer,
-        text=" “坐下来，轻松一下，对屏幕上的选项做一个短暂的浏览。”\n\n 首次启动 Homework Manager 需要填写学校和班级，\n      之后可以在仪表盘中修改这两项。\n\n 在您点击“保存并继续”后，在使用过程中，\n      Homework Manager 会在自身所在目录建立数个 JSON 文件用于存储数据，\n      请不要轻易删除或分享这些 JSON 文件！\n\n 本程序所有数据（含作业内容、订阅账户邮箱、SMTP 凭据等），\n      均保存在程序所在目录的本地文件中，不会上传到任何服务器。\n      SMTP 密码使用 Windows DPAPI 加密后存储。\n\n 订阅账户信息由使用者自行录入并负责取得对方同意后使用。\n 推送邮件通过配置中的 SMTP 服务器直接发送。",
+        text=" “坐下来，轻松一下，对屏幕上的选项做一个短暂的浏览。”\n\n 首次启动 Homework Manager 需要填写学校和班级，\n      之后可以在仪表盘中修改这两项。\n\n 点击“保存并继续”后，程序会在自身目录创建以下文件：\n      config.json（程序设置）、homework.json（作业内容）、subscriptions.json（订阅账户）。\n      修改前会生成隐藏的 config_时间戳.json.bak 配置备份；请勿轻易删除这些文件。\n\n 本程序所有数据（含作业内容、订阅账户邮箱、SMTP 凭据等），\n      均保存在程序所在目录的本地文件中，不会上传到任何服务器。\n      SMTP 密码使用 Windows DPAPI 加密后存储。\n\n 订阅账户信息由使用者自行录入并负责取得对方同意后使用。\n 推送邮件通过配置中的 SMTP 服务器直接发送。",
         foreground="#000000",
         font=("Microsoft YaHei UI", 9),
     ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 18))

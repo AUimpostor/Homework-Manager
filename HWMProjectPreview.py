@@ -15,10 +15,10 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-import ctypes
 import sys
 import threading
 import tkinter as tk
+from tkinter import ttk
 from pathlib import Path
 
 from HWMConfig import load_config, load_homework_data
@@ -79,10 +79,6 @@ class ProjectPreview:
         self.config = load_config(CONFIG_FILE)
         self.sections = visible_sections()
         self.shutdown_event = create_shutdown_event("project_preview")
-        self.zoom = 1.0
-        self.minimum_zoom = 0.5
-        self.maximum_zoom = 3.0
-        self._touch_gesture_proc = None
         set_window_icon(root, __file__)
         root.title("预览项目")
         configure_tk_scaling(root)
@@ -117,14 +113,21 @@ class ProjectPreview:
     def build_preview(self):
         background = "#FFFFFF"
         self.root.configure(background=background)
+        style = ttk.Style(self.root)
+        if style.theme_use() == "classic":
+            themes = style.theme_names()
+            preferred_theme = "vista" if sys.platform == "win32" else "clam"
+            if preferred_theme in themes:
+                style.theme_use(preferred_theme)
         alignment = "w" if self.config.get("project_alignment") == "靠左" else "e"
         justify = "left" if alignment == "w" else "right"
         padx = max(1, round(float(self.config.get("content_padding_x_permill", 18)) / 1000 * self.root.winfo_screenwidth()))
         pady = max(1, round(float(self.config.get("content_padding_y_permill", 12)) / 1000 * self.root.winfo_screenheight()))
         base_size = max(1, int(self.config.get("project_font_size", 17)))
+        content_frame = tk.Frame(self.root, background=background)
         preview = tk.Text(
-            self.root,
-            wrap="word",
+            content_frame,
+            wrap="none",
             undo=False,
             bg=background,
             fg="#000000",
@@ -139,9 +142,8 @@ class ProjectPreview:
             pady=pady,
             font=("Microsoft YaHei UI", base_size),
             cursor="arrow",
-            takefocus=True,
+            takefocus=False,
         )
-        preview.pack(fill="both", expand=True)
         self.base_sizes = {
             "subject": base_size,
             "project": base_size,
@@ -151,7 +153,25 @@ class ProjectPreview:
         self.preview_tags = {"subject": ("bold",), "project": (), "secondary": (), "empty": ()}
         self.preview = preview
         self.justify = justify
-        self.apply_zoom()
+        self.zoom_percent = 100
+
+        toolbar = ttk.Frame(self.root, padding=(8, 6))
+        toolbar.pack(side="bottom", fill="x")
+        ttk.Label(toolbar, text="缩放").pack(side="left", padx=(0, 6))
+        ttk.Label(toolbar, text="10%").pack(side="left", padx=(0, 4))
+        self.zoom_scale = ttk.Scale(
+            toolbar,
+            from_=10,
+            to=500,
+            orient="horizontal",
+            command=self.set_zoom,
+        )
+        self.zoom_scale.pack(side="left", fill="x", expand=True)
+        ttk.Label(toolbar, text="500%").pack(side="left", padx=(4, 8))
+        self.zoom_label = ttk.Label(toolbar, text="100%", width=5, anchor="e")
+        self.zoom_label.pack(side="right")
+        self.zoom_scale.set(self.zoom_percent)
+        content_frame.pack(fill="both", expand=True)
 
         if not self.sections:
             preview.insert("end", "（今天没有作业）", "empty")
@@ -167,113 +187,49 @@ class ProjectPreview:
                 if section_index < len(self.sections) - 1:
                     preview.insert("end", "\n")
 
-        # A disabled Text widget cannot be selected/copied, so block edits at
-        # the key-event layer while leaving normal selection and Ctrl+C intact.
+        # Keep the preview read-only.
         preview.bind("<KeyPress>", lambda event: "break")
         preview.bind("<<Paste>>", lambda event: "break")
         preview.bind("<<Cut>>", lambda event: "break")
         preview.bind("<<Clear>>", lambda event: "break")
         preview.bind("<<Undo>>", lambda event: "break")
         preview.bind("<<Redo>>", lambda event: "break")
-        preview.bind("<Button-1>", lambda _event: preview.focus_set(), add="+")
-        preview.bind("<MouseWheel>", self.on_mousewheel, add="+")
-        preview.bind("<Control-MouseWheel>", self.on_mousewheel, add="+")
-        preview.bind("<Button-4>", lambda event: self.change_zoom(0.1), add="+")
-        preview.bind("<Button-5>", lambda event: self.change_zoom(-0.1), add="+")
-        if sys.platform == "win32":
-            self.enable_windows_touch_zoom()
 
-    def apply_zoom(self):
         for tag, size in self.base_sizes.items():
-            self.preview.tag_configure(
+            preview.tag_configure(
                 tag,
-                font=("Microsoft YaHei UI", max(1, round(size * self.zoom)), *self.preview_tags[tag]),
+                font=("Microsoft YaHei UI", size, *self.preview_tags[tag]),
                 justify=self.justify,
             )
 
-    def change_zoom(self, amount):
-        self.zoom = min(self.maximum_zoom, max(self.minimum_zoom, self.zoom + amount))
-        self.apply_zoom()
-        return "break"
+        # Connect both scroll directions so long projects remain reachable at
+        # high zoom levels.
+        vertical_scrollbar = ttk.Scrollbar(
+            content_frame, orient="vertical", command=preview.yview
+        )
+        horizontal_scrollbar = ttk.Scrollbar(
+            content_frame, orient="horizontal", command=preview.xview
+        )
+        preview.configure(
+            yscrollcommand=vertical_scrollbar.set,
+            xscrollcommand=horizontal_scrollbar.set,
+        )
+        preview.grid(row=0, column=0, sticky="nsew")
+        vertical_scrollbar.grid(row=0, column=1, sticky="ns")
+        horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
+        content_frame.grid_rowconfigure(0, weight=1)
+        content_frame.grid_columnconfigure(0, weight=1)
 
-    def on_mousewheel(self, event):
-        delta = getattr(event, "delta", 0)
-        if not delta:
-            return "break"
-        self.change_zoom(0.1 if delta > 0 else -0.1)
-        return "break"
-
-    def enable_windows_touch_zoom(self):
-        """Handle Windows WM_GESTURE pinch events for native touchscreens."""
-        try:
-            from ctypes import wintypes
-
-            class GESTUREINFO(ctypes.Structure):
-                _fields_ = [
-                    ("cbSize", wintypes.UINT),
-                    ("dwFlags", wintypes.DWORD),
-                    ("dwID", wintypes.DWORD),
-                    ("hwndTarget", wintypes.HWND),
-                    ("ptsLocation", wintypes.POINT),
-                    ("dwInstanceID", wintypes.DWORD),
-                    ("dwSequenceID", wintypes.DWORD),
-                    ("ullArguments", ctypes.c_uint64),
-                    ("cbExtraArgs", wintypes.UINT),
-                ]
-            user32 = ctypes.windll.user32
-            get_gesture_info = user32.GetGestureInfo
-            get_gesture_info.argtypes = [wintypes.HANDLE, ctypes.POINTER(GESTUREINFO)]
-            get_gesture_info.restype = wintypes.BOOL
-            close_gesture_info = user32.CloseGestureInfoHandle
-            close_gesture_info.argtypes = [wintypes.HANDLE]
-            close_gesture_info.restype = wintypes.BOOL
-            self.root.update_idletasks()
-            hwnd = user32.GetParent(self.root.winfo_id())
-            get_window_long = getattr(user32, "GetWindowLongPtrW", user32.GetWindowLongW)
-            set_window_long = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
-            pointer_type = ctypes.c_ssize_t if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_long
-            get_window_long.argtypes = [wintypes.HWND, ctypes.c_int]
-            get_window_long.restype = pointer_type
-            set_window_long.argtypes = [wintypes.HWND, ctypes.c_int, pointer_type]
-            set_window_long.restype = pointer_type
-            user32.CallWindowProcW.argtypes = [
-                pointer_type, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
-            ]
-            user32.CallWindowProcW.restype = ctypes.c_ssize_t
-            callback_type = ctypes.WINFUNCTYPE(
-                ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
+    def set_zoom(self, value):
+        zoom_percent = max(10, min(500, int(round(float(value)))))
+        self.zoom_percent = zoom_percent
+        self.zoom_label.configure(text="{}%".format(zoom_percent))
+        for tag, base_size in self.base_sizes.items():
+            size = max(1, int(base_size * zoom_percent / 100 + 0.5))
+            self.preview.tag_configure(
+                tag,
+                font=("Microsoft YaHei UI", size, *self.preview_tags[tag]),
             )
-            previous = get_window_long(hwnd, -4)
-            gesture_state = {"last_distance": None}
-
-            def window_proc(window, message, wparam, lparam):
-                if message == 0x0119:  # WM_GESTURE
-                    info = GESTUREINFO()
-                    info.cbSize = ctypes.sizeof(GESTUREINFO)
-                    if get_gesture_info(wintypes.HANDLE(lparam), ctypes.byref(info)):
-                        try:
-                            if info.dwID == 4:  # GID_ZOOM
-                                distance = info.ullArguments
-                                if info.dwFlags & 1:  # GF_BEGIN
-                                    gesture_state["last_distance"] = distance
-                                else:
-                                    last = gesture_state.get("last_distance")
-                                    if last:
-                                        change = 0.1 if distance > last else -0.1
-                                        self.change_zoom(change)
-                                    gesture_state["last_distance"] = distance
-                                if info.dwFlags & 2:  # GF_END
-                                    gesture_state["last_distance"] = None
-                        finally:
-                            close_gesture_info(wintypes.HANDLE(lparam))
-                    return 0
-                return user32.CallWindowProcW(previous, window, message, wparam, lparam)
-
-            self._touch_gesture_proc = callback_type(window_proc)
-            callback_address = ctypes.cast(self._touch_gesture_proc, ctypes.c_void_p).value
-            set_window_long(hwnd, -4, pointer_type(callback_address))
-        except (AttributeError, OSError, TypeError, ValueError):
-            self._touch_gesture_proc = None
 
 
 def main():
