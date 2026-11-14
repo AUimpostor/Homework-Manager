@@ -184,9 +184,16 @@ def _render_homework_html(sections, app_config):
             prefix = "" if assignment.get("ignore_prefix", False) else app_config.get("project_prefix", "")
             suffix = "" if assignment.get("ignore_suffix", False) else app_config.get("project_suffix", "")
             text = "{}{}{}".format(prefix, assignment["project"], suffix)
+            html_text = html.escape(text).replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br>")
             font_size = "xx-small" if assignment.get("secondary", False) else "medium"
+            # Use table rows: mail clients reliably retain row spacing, while
+            # adjacent inline divs and repeated <br> elements may be collapsed.
+            row_spacing = "12px" if assignment.get("secondary", False) else "0"
             html_projects.append(
-                '<div style="font-size: {}">{}</div>'.format(font_size, html.escape(text))
+                '<table role="presentation" cellpadding="0" cellspacing="0" '
+                'style="border-collapse:collapse;width:100%"><tr>'
+                '<td style="font-size:{};padding:0 0 {} 0">{}</td>'
+                '</tr></table>'.format(font_size, row_spacing, html_text)
             )
         html_sections.append(
             '<strong style="font-size: large">{}</strong><br>{}<br>'.format(

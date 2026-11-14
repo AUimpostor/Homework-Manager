@@ -816,6 +816,11 @@ class ConfigEditor:
         ):
             return
         config = DEFAULT_CONFIG.copy()
+        # School and class identify the user's context, so preserve them when
+        # resetting presentation and preference settings.
+        current_config = load_config(CONFIG_FILE)
+        for key in ("school", "class"):
+            config[key] = current_config.get(key, config[key])
         try:
             save_document(config)
             update_display_startup(config["auto_start_display"])
