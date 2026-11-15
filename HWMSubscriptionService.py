@@ -18,10 +18,12 @@
 """SMTP delivery, subscription persistence, and scheduled-push services."""
 import base64
 import ctypes
+import errno
 import html
 import json
 import re
 import smtplib
+import socket
 import ssl
 import sys
 import threading
@@ -30,7 +32,8 @@ from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
 
-from HWMConfig import load_config, load_homework_data
+from HWMConfig import data_directory, load_config, load_homework_data
+from HWMAppIdentity import APP_ID
 
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
@@ -46,6 +49,7 @@ SUBJECT_NAMES = {
 DEFAULTS = {
     "source": {"host": "", "port": 465, "security": "SSL", "email": "", "username": "", "password": ""},
     "subscribers": [], "schedule_enabled": False, "schedule_time": "18:00:00",
+    "schedule_notification_enabled": True,
     "title_template": "%date% 作业",
     "body_template": "<b>%n% %t%，您好。这是今天的作业：</b>\n<hr style='height:1px;border-width:0;color:gray;background-color:gray'><blockquote style='border-left: 3px solid #318CE7; padding-left: 12px; margin-left: 0;'>%hw%</blockquote>\n<div style='text-align: right;'><b>%s% %c%</b></div><hr style='height:2px;border-width:0;color:gray;background-color:gray'><div style='text-align: center;'><small>此邮件由 <a href='https://github.com/AUimpostor/Homework-Manager'>Homework Manager</a> 推送管理器自动发送，请不要回复。\n%date% %time%</small></div>",
 }
@@ -108,7 +112,7 @@ def _unprotect(value):
         ctypes.windll.kernel32.LocalFree(result.pbData)
 
 def load_settings(directory=APP_DIR):
-    path = Path(directory) / SETTINGS_NAME
+    path = data_directory(directory) / SETTINGS_NAME
     try:
         with path.open("r", encoding="utf-8") as stream:
             loaded = json.load(stream)
@@ -127,7 +131,8 @@ def load_settings(directory=APP_DIR):
         return dict(DEFAULTS, source=dict(DEFAULTS["source"]), subscribers=[])
 
 def save_settings(settings, directory=APP_DIR):
-    path = Path(directory) / SETTINGS_NAME
+    path = data_directory(directory) / SETTINGS_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
     value = dict(settings)
     value.pop("last_sent_date", None)
     value["source"] = dict(settings["source"])
@@ -139,7 +144,8 @@ def save_settings(settings, directory=APP_DIR):
     temporary.replace(path)
 
 def homework_text(directory=APP_DIR):
-    data = load_homework_data(Path(directory) / "homework.json", Path(directory) / "config.json")
+    data_dir = data_directory(directory)
+    data = load_homework_data(data_dir / "homework.json", data_dir / "config.json")
     sections = []
     for item in data:
         if not isinstance(item, dict):
@@ -165,14 +171,14 @@ def homework_text(directory=APP_DIR):
 
 def render_push_content(settings, person, directory=APP_DIR):
     sections = homework_text(directory)
-    app_config = load_config(Path(directory) / "config.json")
+    app_config = load_config(data_directory(directory) / "config.json")
     return _render_push_content(settings, person, sections, app_config)
 
 
 def render_homework_html(directory=APP_DIR):
     """Render the exact HTML fragment substituted for %hw% in push emails."""
     sections = homework_text(directory)
-    app_config = load_config(Path(directory) / "config.json")
+    app_config = load_config(data_directory(directory) / "config.json")
     return _render_homework_html(sections, app_config)
 
 
@@ -257,7 +263,7 @@ def send_push(settings, directory=APP_DIR, recipients=None):
     if not targets:
         raise ValueError("没有可发送的订阅账户。")
     sections = homework_text(directory)
-    app_config = load_config(Path(directory) / "config.json")
+    app_config = load_config(data_directory(directory) / "config.json")
     for person in targets:
         msg = EmailMessage()
         title, body, html_body = _render_push_content(settings, person, sections, app_config)
@@ -298,13 +304,23 @@ def _smtp_session(source, timeout):
 def check_smtp_connection(source, timeout=8):
     required = ("host", "port", "email", "username", "password")
     if any(not str(source.get(key, "")).strip() for key in required):
-        return False
+        return "invalid"
     try:
         with _smtp_session(source, timeout):
             pass
-        return True
+        return "connected"
+    except (socket.timeout, TimeoutError):
+        return "timeout"
+    except (socket.gaierror, OSError) as error:
+        # Network unreachable / disconnected errors are distinct from SMTP refusal.
+        if getattr(error, "errno", None) in (
+            errno.ENETDOWN, errno.ENETUNREACH, errno.EHOSTUNREACH,
+            10050, 10051, 10065,
+        ):
+            return "offline"
+        return "failed"
     except Exception:
-        return False
+        return "failed"
 
 def maybe_send_scheduled(directory=APP_DIR, now=None):
     now = now or datetime.now()
@@ -329,7 +345,24 @@ def maybe_send_scheduled(directory=APP_DIR, now=None):
         if not active_subscribers:
             return
         send_push(settings, directory, recipients=active_subscribers)
+        if settings.get("schedule_notification_enabled", True):
+            _show_scheduled_push_notification(directory)
         with (Path(directory) / "push.log").open("a", encoding="utf-8") as log:
             log.write("{} scheduled push sent to {} subscribers\n".format(now.isoformat(timespec="seconds"), len(active_subscribers)))
     finally:
         _schedule_lock.release()
+
+
+def _show_scheduled_push_notification(directory):
+    """Display the same success Toast used by the push manager UI."""
+    try:
+        from winotify import Notification
+
+        Notification(
+            app_id=APP_ID,
+            title="推送完成",
+            msg="已将当前的作业推送至订阅账户",
+        ).show()
+    except Exception:
+        # A Toast failure must not make the scheduled email delivery fail.
+        pass

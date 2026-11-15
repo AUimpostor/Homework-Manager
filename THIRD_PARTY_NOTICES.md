@@ -7,6 +7,7 @@ Homework Manager uses or may bundle the following third-party components. They r
 | Python | Python Software Foundation License | <https://docs.python.org/3/license.html> |
 | Tcl/Tk | Tcl/Tk license terms | Included by the Python Tcl/Tk distribution; retain its `license.terms` files |
 | pystray | LGPL-3.0 | <https://github.com/moses-palmer/pystray> |
+| winotify | MIT | <https://github.com/versa-syahptr/winotify> |
 | Pillow | MIT-CMU | <https://github.com/python-pillow/Pillow/blob/main/LICENSE> |
 | PyInstaller | GPL-2.0-or-later with a special bootloader exception; bundled runtime hooks include Apache-2.0-licensed material | <https://github.com/pyinstaller/pyinstaller/blob/develop/COPYING.txt> |
 

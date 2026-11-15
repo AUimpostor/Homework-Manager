@@ -1,5 +1,6 @@
 # Homework Manager dependencies; this list is provided under GPL-3.0-or-later.
 # Third-party packages retain their own licenses; see THIRD_PARTY_NOTICES.md.
 pystray>=0.19.5
+winotify>=1.1.0
 Pillow>=10.0.0
 PyInstaller>=6.0

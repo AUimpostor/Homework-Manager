@@ -41,11 +41,13 @@ from HWMRuntime import (
     place_window_bottom_right,
     set_window_size_percent,
     notify_config_saved,
+    show_windows_notification,
     wait_for_config_reload,
     wait_for_shutdown,
     set_window_icon,
 )
-from HWMConfig import DEFAULT_CONFIG, load_config, load_homework_data, save_config
+from HWMConfig import DEFAULT_CONFIG, data_directory, load_config, load_homework_data, save_config
+from HWMAppIdentity import uninstall
 
 
 APPLICATION_DIR = (
@@ -54,8 +56,10 @@ APPLICATION_DIR = (
     else Path(__file__).resolve().parent
 )
 RESOURCE_DIR = APPLICATION_DIR
-CONFIG_FILE = RESOURCE_DIR / "config.json"
-HOMEWORK_FILE = RESOURCE_DIR / "homework.json"
+DATA_DIR = data_directory(RESOURCE_DIR)
+BACKUP_DIR = DATA_DIR / "backup"
+CONFIG_FILE = DATA_DIR / "config.json"
+HOMEWORK_FILE = DATA_DIR / "homework.json"
 LICENSE_BUNDLE_DIR = (
     Path(getattr(sys, "_MEIPASS", APPLICATION_DIR)) / "distribution-licenses"
     if getattr(sys, "frozen", False)
@@ -118,7 +122,7 @@ FIELD_LABELS = {
     "title_secondary_color": "标题次要颜色",
     "title_outline_opacity": "描边透明度（%）",
     "title_guide_line_width_permill": "标题引导线粗（‰）",
-    "auto_start_display": "开机时自动启动显示器",
+    "auto_start_display": "随 Windows 启动",
     "tray_click_action": "点击系统托盘图标时",
     "school": "学校",
     "class": "班级",
@@ -262,25 +266,14 @@ def create_config_backup(extension=".json.bak"):
     if not CONFIG_FILE.is_file():
         return None
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    backup = CONFIG_FILE.with_name("config_{}{}".format(timestamp, extension))
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    backup = BACKUP_DIR / "config_{}{}".format(timestamp, extension)
     shutil.copy2(CONFIG_FILE, backup)
-    hide_file_in_explorer(backup)
     return backup
 
 
-def hide_file_in_explorer(path):
-    if sys.platform != "win32":
-        return
-    kernel32 = ctypes.windll.kernel32
-    attributes = kernel32.GetFileAttributesW(str(path))
-    if attributes == -1:
-        raise ctypes.WinError()
-    if not kernel32.SetFileAttributesW(str(path), attributes | 0x2):
-        raise ctypes.WinError()
-
-
 def ensure_config_file_visible():
-    """Keep the active config.json discoverable; only backup copies are hidden."""
+    """Keep the active config.json discoverable."""
     if sys.platform != "win32" or not CONFIG_FILE.is_file():
         return
     kernel32 = ctypes.windll.kernel32
@@ -293,7 +286,7 @@ def ensure_config_file_visible():
 
 def list_config_backups():
     return sorted(
-        (path for path in RESOURCE_DIR.glob("config_*.bak") if path.is_file()),
+        (path for path in BACKUP_DIR.glob("config*.json.bak") if path.is_file()),
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )
@@ -555,7 +548,7 @@ class ConfigEditor:
             "<Button-1>",
             lambda _event: webbrowser.open("https://github.com/AUimpostor/Homework-Manager"),
         )
-        ttk.Label(about_title, text=" v1.5.1 Beta 1").pack(side="left")
+        ttk.Label(about_title, text=" v1.6 Beta").pack(side="left")
         row += 1
         ttk.Label(
             main,
@@ -600,8 +593,13 @@ class ConfigEditor:
         ).pack(side="left", padx=4)
         ttk.Button(
             recovery_buttons,
-            text="回滚配置",
+            text="备份管理",
             command=self.rollback_config,
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            recovery_buttons,
+            text="卸载",
+            command=self.uninstall_application,
         ).pack(side="left", padx=4)
 
         bottom = ttk.Frame(outer)
@@ -657,6 +655,24 @@ class ConfigEditor:
             os.startfile(str(path))
         except OSError as error:
             messagebox.showerror("无法打开", str(error), parent=self.root)
+
+    def uninstall_application(self):
+        if not messagebox.askyesno("确认卸载", "将移除 Homework Manager。继续选择卸载方式？", parent=self.root):
+            return
+        choice = messagebox.askquestion(
+            "选择卸载方式",
+            "选择“是”：卸载程序（移除程序、程序数据、开始菜单快捷方式和注册信息）。\n\n选择“否”：调试性卸载（移除程序数据、开始菜单快捷方式和注册信息，保留程序文件）。",
+            type=messagebox.YESNOCANCEL,
+            parent=self.root,
+        )
+        if choice == "cancel":
+            return
+        remove_program = choice == "yes"
+        try:
+            uninstall(remove_program)
+            self.root.destroy()
+        except OSError as error:
+            messagebox.showerror("卸载失败", str(error), parent=self.root)
 
     def open_license_folder(self):
         if not LICENSE_BUNDLE_DIR.is_dir():
@@ -806,6 +822,7 @@ class ConfigEditor:
         self.config = config
         self.status.set("已保存到 config.json")
         notify_config_saved()
+        show_windows_notification("已保存 Homework Manager 配置")
         self.root.after_idle(self.reload_from_disk)
 
     def restore_default_config(self):
@@ -836,7 +853,7 @@ class ConfigEditor:
         backups = list_config_backups()
         dialog = tk.Toplevel(self.root)
         set_window_icon(dialog, __file__)
-        dialog.title("回滚配置")
+        dialog.title("备份管理")
         dialog.transient(self.root)
         dialog.grab_set()
         configure_tk_scaling(dialog)
@@ -974,6 +991,9 @@ class ConfigEditor:
 
 def main():
     enable_high_dpi()
+    from HWMRuntime import acquire_single_instance
+    if not acquire_single_instance("dashboard"):
+        return
     root = tk.Tk()
     try:
         ConfigEditor(root)

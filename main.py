@@ -23,6 +23,9 @@ import sys
 import threading
 import time
 import traceback
+import json
+import uuid
+import shutil
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
@@ -30,7 +33,7 @@ from tkinter import messagebox, ttk
 
 from PIL import Image, ImageDraw
 
-from HWMConfig import load_config, save_config
+from HWMConfig import data_directory, load_config, save_config, load_homework_data, save_homework_data
 from HWMRuntime import (
     close_main_control_events,
     configure_tk_scaling,
@@ -43,8 +46,10 @@ from HWMRuntime import (
     set_window_size_percent,
     place_window_bottom_right,
     wait_for_main_action,
+    show_windows_notification,
 )
 from HWMSubscriptionService import maybe_send_scheduled
+from HWMAppIdentity import register_app
 
 
 APPLICATION_DIR = (
@@ -53,7 +58,8 @@ APPLICATION_DIR = (
     else Path(__file__).resolve().parent
 )
 RESOURCE_DIR = APPLICATION_DIR
-CONFIG_FILE = RESOURCE_DIR / "config.json"
+DATA_DIR = data_directory(RESOURCE_DIR)
+CONFIG_FILE = DATA_DIR / "config.json"
 TRAY_ICON_FILE = (
     Path(getattr(sys, "_MEIPASS", APPLICATION_DIR)) / "hwm.ico"
     if getattr(sys, "frozen", False)
@@ -61,6 +67,50 @@ TRAY_ICON_FILE = (
 )
 DISPLAY_MUTEX_NAME = "Local\\HomeworkDisplaySingleInstance"
 MAIN_MUTEX_NAME = "Local\\HomeworkManagerMainInstance"
+STORAGE_FILE = DATA_DIR / "storage.json"
+STORAGE_WRITE_INTERVAL_SECONDS = 15 * 60
+
+
+def reset_homework_if_new_day():
+    today = datetime.now().date()
+    try:
+        stored = json.loads(STORAGE_FILE.read_text(encoding="utf-8"))
+        previous = datetime.fromisoformat(stored.get("last_run_date", "")).date()
+    except (OSError, ValueError, TypeError, AttributeError):
+        previous = None
+
+    if previous is not None and previous < today:
+        homework_file = DATA_DIR / "homework.json"
+        backup_dir = DATA_DIR / "backup"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H")
+        backup_file = backup_dir / "homework_{}.json.bak".format(timestamp)
+        suffix = 1
+        while backup_file.exists():
+            backup_file = backup_dir / "homework_{}_{}.json.bak".format(timestamp, suffix)
+            suffix += 1
+        shutil.copy2(homework_file, backup_file)
+
+        homework = load_homework_data(homework_file, CONFIG_FILE)
+        for subject in homework:
+            if not isinstance(subject, dict):
+                continue
+            for assignments in subject.values():
+                if isinstance(assignments, list):
+                    for index, assignment in enumerate(assignments):
+                        if isinstance(assignment, dict):
+                            assignment["hide"] = True
+                        elif isinstance(assignment, str):
+                            assignments[index] = {"project": assignment, "hide": True}
+        save_homework_data(homework_file, homework)
+        show_windows_notification("已重置所有科目的所有项目")
+
+
+def write_storage_timestamp():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = STORAGE_FILE.with_suffix(".json.{}.tmp".format(uuid.uuid4().hex))
+    temporary.write_text(json.dumps({"last_run_date": datetime.now().date().isoformat()}, ensure_ascii=False, indent=4) + "\n", encoding="utf-8")
+    temporary.replace(STORAGE_FILE)
 
 
 def acquire_mutex(name):
@@ -191,12 +241,12 @@ def load_tray_click_action():
 def show_school_class_prompt():
     config = load_config(CONFIG_FILE)
     if str(config.get("school", "")).strip() and str(config.get("class", "")).strip():
-        return True
+        return True, False
 
     root = tk.Tk()
     enable_touch_keyboard(root)
     set_window_icon(root, __file__)
-    root.title("填写学校和班级")
+    root.title("欢迎")
     root.attributes("-topmost", True)
     root.resizable(False, False)
     configure_tk_scaling(root)
@@ -214,7 +264,7 @@ def show_school_class_prompt():
     ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
     ttk.Label(
         outer,
-        text=" “坐下来，轻松一下，对屏幕上的选项做一个短暂的浏览。”\n\n 首次启动 Homework Manager 需要填写学校和班级，\n      之后可以在仪表盘中修改这两项。\n\n 点击“保存并继续”后，程序会在自身目录创建以下文件：\n      config.json（程序设置）、homework.json（作业内容）、subscriptions.json（订阅账户）。\n      修改前会生成隐藏的 config_时间戳.json.bak 配置备份；请勿轻易删除这些文件。\n\n 本程序所有数据（含作业内容、订阅账户邮箱、SMTP 凭据等），\n      均保存在程序所在目录的本地文件中，不会上传到任何服务器。\n      SMTP 密码使用 Windows DPAPI 加密后存储。\n\n 订阅账户信息由使用者自行录入并负责取得对方同意后使用。\n 推送邮件通过配置中的 SMTP 服务器直接发送。",
+        text=" “坐下来，轻松一下，对屏幕上的选项做一个短暂的浏览。”\n\n 首次启动 Homework Manager 需要填写学校和班级，\n      之后可以在仪表盘中修改这两项。\n\n 本程序数据保存在程序目录，不会上传到服务器。\n\n 推送管理器中的 SMTP 密码使用 Windows DPAPI 加密。\n\n 当您点击“保存并继续”后，即授权本程序：\n      - 提供程序的服务；\n      - 在自身目录的 data 文件夹中创建若干文件用于存储数据；\n      - 注册开始菜单快捷方式及通知应用标识。",
         foreground="#000000",
         font=("Microsoft YaHei UI", 9),
     ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 18))
@@ -236,8 +286,9 @@ def show_school_class_prompt():
         config["class"] = class_name
         try:
             save_config(CONFIG_FILE, config)
+            register_app()
         except OSError as error:
-            messagebox.showerror("保存失败", str(error), parent=root)
+            messagebox.showerror("保存或应用注册失败", str(error), parent=root)
             return
         completed["value"] = True
         root.destroy()
@@ -250,7 +301,7 @@ def show_school_class_prompt():
     place_window_bottom_right(root)
     root.after_idle(lambda: (root.lift(), root.focus_force(), school_entry.focus_set()))
     root.mainloop()
-    return completed["value"]
+    return completed["value"], completed["value"]
 
 
 def create_tray_image():
@@ -281,13 +332,17 @@ def main():
     if main_mutex is False:
         return
 
-    if not show_school_class_prompt():
+    prompt_succeeded, first_run_completed = show_school_class_prompt()
+    if not prompt_succeeded:
         return
+    reset_homework_if_new_day()
+    write_storage_timestamp()
     ensure_display_running()
     tray_click_action = load_tray_click_action()
     main_control_events = create_main_control_events()
 
     def schedule_loop():
+        last_storage_write = time.monotonic()
         while True:
             try:
                 maybe_send_scheduled(RESOURCE_DIR)
@@ -300,6 +355,12 @@ def main():
                 except OSError:
                     pass
             current = datetime.now()
+            if time.monotonic() - last_storage_write >= STORAGE_WRITE_INTERVAL_SECONDS:
+                try:
+                    write_storage_timestamp()
+                    last_storage_write = time.monotonic()
+                except OSError:
+                    pass
             time.sleep(max(0.01, 1.0 - current.microsecond / 1_000_000))
 
     threading.Thread(target=schedule_loop, daemon=True).start()
@@ -317,6 +378,10 @@ def main():
         if restart:
             start_restart_helper()
         shutdown_components()
+        try:
+            write_storage_timestamp()
+        except OSError:
+            pass
         icon.stop()
 
     def exit_hwm(icon, _item=None):
@@ -365,6 +430,8 @@ def main():
             pass
 
     threading.Thread(target=wait_for_control_action, daemon=True).start()
+    if first_run_completed:
+        open_dashboard()
     icon.run()
     on_icon_stop(icon)
 

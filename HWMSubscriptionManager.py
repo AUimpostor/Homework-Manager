@@ -18,6 +18,7 @@
 import html
 import json
 import os
+import time
 import tempfile
 import threading
 import tkinter as tk
@@ -35,6 +36,7 @@ from HWMRuntime import (
     set_window_icon,
     set_window_size_percent,
     wait_for_shutdown,
+    show_windows_notification,
 )
 from HWMSubscriptionService import (
     APP_DIR,
@@ -47,6 +49,7 @@ from HWMSubscriptionService import (
     save_settings,
     send_push,
 )
+from HWMAppIdentity import APP_ID
 
 
 class SubscriptionManager:
@@ -142,10 +145,12 @@ class SubscriptionManager:
         schedule.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         self.enabled = tk.BooleanVar()
         ttk.Checkbutton(schedule, text="每日推送（仅 HWM 运行时）", variable=self.enabled).grid(row=0, column=0, columnspan=3, sticky="w")
+        self.schedule_notification_enabled = tk.BooleanVar(value=True)
+        ttk.Checkbutton(schedule, text="发送通知", variable=self.schedule_notification_enabled).grid(row=1, column=0, columnspan=3, sticky="w")
         self.time_var = tk.StringVar(value="18:00:00")
-        ttk.Label(schedule, text="时间（24 时制）").grid(row=1, column=0, sticky="w", pady=4)
-        ttk.Entry(schedule, textvariable=self.time_var, width=12).grid(row=1, column=1, sticky="w", pady=4)
-        ttk.Button(schedule, text="保存定时设置", command=self._save_schedule).grid(row=1, column=2, padx=(8, 0))
+        ttk.Label(schedule, text="时间（24 时制）").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Entry(schedule, textvariable=self.time_var, width=12).grid(row=2, column=1, sticky="w", pady=4)
+        ttk.Button(schedule, text="保存定时设置", command=self._save_schedule).grid(row=2, column=2, padx=(8, 0))
         bottom = ttk.Frame(frame)
         bottom.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         ttk.Label(bottom, textvariable=self.status).pack(side="left")
@@ -156,6 +161,7 @@ class SubscriptionManager:
         for key, var in self.vars.items(): var.set(str(s.get(key, "")))
         self.security.set(s.get("security", "SSL"))
         self.enabled.set(bool(self.settings.get("schedule_enabled")))
+        self.schedule_notification_enabled.set(bool(self.settings.get("schedule_notification_enabled", True)))
         try:
             saved_schedule_time = normalize_schedule_time(self.settings.get("schedule_time", "18:00:00"))
         except ValueError:
@@ -348,15 +354,27 @@ class SubscriptionManager:
         self.smtp_status.set("正在检测 SMTP 连接…")
         self.smtp_status_label.configure(foreground="#777777")
         def worker():
-            connected = check_smtp_connection(source)
+            started = time.monotonic()
+            result = check_smtp_connection(source)
+            elapsed = time.monotonic() - started
             def update():
                 if generation != self._smtp_check_generation:
                     return
-                if connected:
-                    self.smtp_status.set("已连接到 SMTP 服务器")
+                suffix = "（{:.1f} s）".format(elapsed)
+                if result == "connected":
+                    self.smtp_status.set("已连接到 SMTP 服务器 " + suffix)
                     self.smtp_status_label.configure(foreground="#187A3D")
+                elif result == "timeout":
+                    self.smtp_status.set("连接超时 " + suffix)
+                    self.smtp_status_label.configure(foreground="#B3261E")
+                elif result == "offline":
+                    self.smtp_status.set("无网络连接 " + suffix)
+                    self.smtp_status_label.configure(foreground="#B3261E")
+                elif result == "invalid":
+                    self.smtp_status.set("请填写完整 SMTP 设置 " + suffix)
+                    self.smtp_status_label.configure(foreground="#B3261E")
                 else:
-                    self.smtp_status.set("无法连接到 SMTP 服务器")
+                    self.smtp_status.set("无法连接到 SMTP 服务器 " + suffix)
                     self.smtp_status_label.configure(foreground="#B3261E")
             try: self.root.after(0, update)
             except tk.TclError: pass
@@ -464,7 +482,9 @@ class SubscriptionManager:
                 if not messagebox.askyesno("确认定时推送", "确认每天 {} 向所有订阅账户发送推送邮件？\n仅当 HWM 正在运行时执行。".format(schedule_time), parent=self.root): return
             self.settings["schedule_enabled"] = enabled
             self.settings["schedule_time"] = normalized_time
+            self.settings["schedule_notification_enabled"] = self.schedule_notification_enabled.get()
             save_settings(self.settings); self.status.set("定时推送设置已保存")
+            show_windows_notification("已保存定时推送配置")
         except (OSError, ValueError) as error: messagebox.showerror("保存失败", str(error), parent=self.root)
 
     def _open_push_preview(self):
@@ -524,14 +544,34 @@ class SubscriptionManager:
     def _send_worker(self, settings):
         try:
             count = send_push(settings)
+            self._show_success_notification()
             self.root.after(0, lambda: self.status.set("已发送到 {} 个订阅账户".format(count)))
         except Exception as error:
             self.root.after(0, lambda e=str(error): messagebox.showerror("推送失败", e, parent=self.root))
             self.root.after(0, lambda: self.status.set("推送失败"))
 
+    def _show_success_notification(self):
+        """Show a native Windows notification after a successful push."""
+        try:
+            from winotify import Notification
+
+            Notification(
+                app_id=APP_ID,
+                title="推送完成",
+                msg="已将当前的作业推送至订阅账户",
+            ).show()
+        except Exception as error:
+            # The email delivery succeeded; a notification failure must not
+            # turn that success into an error, but make the issue visible.
+            self.root.after(0, lambda e=str(error): self.status.set(
+                "推送已发送，但通知显示失败：{}".format(e)))
+
 
 def main():
     enable_high_dpi()
+    from HWMRuntime import acquire_single_instance
+    if not acquire_single_instance("subscription_manager"):
+        return
     root = tk.Tk()
     try:
         SubscriptionManager(root)

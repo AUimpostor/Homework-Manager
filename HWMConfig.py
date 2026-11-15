@@ -16,6 +16,7 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import json
+import shutil
 import uuid
 from pathlib import Path
 
@@ -46,6 +47,9 @@ DEFAULT_CONFIG = {
     "dashboard_height_percent": 40,
     "editor_width_percent": 50,
     "editor_height_percent": 50,
+    "editor_visible_actions": ["add", "edit", "toggle", "delete", "up", "down"],
+    "editor_visible_management_actions": ["undo", "redo", "save"],
+    "editor_management_action_order": ["undo", "redo", "save", "backup"],
     "display_range_left_percent": 55,
     "display_range_right_percent": 100,
     "display_range_top_percent": 2,
@@ -80,6 +84,25 @@ DEFAULT_SUBJECTS = (
 )
 
 
+def data_directory(application_dir):
+    """Return the data directory, moving existing root-level user files once."""
+    application_dir = Path(application_dir)
+    data_dir = application_dir / "data"
+    backup_dir = data_dir / "backup"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("config.json", "homework.json", "subscriptions.json"):
+        source = application_dir / name
+        destination = data_dir / name
+        if source.is_file() and not destination.exists():
+            shutil.move(str(source), str(destination))
+    for source in application_dir.glob("config_*.bak"):
+        destination = backup_dir / source.name
+        if source.is_file() and not destination.exists():
+            shutil.move(str(source), str(destination))
+    return data_dir
+
+
 def default_document():
     return [
         {"config": DEFAULT_CONFIG.copy()},
@@ -94,7 +117,7 @@ def _write_default_config(config_file):
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8") as target:
-            json.dump({"config": document[0]["config"]}, target, ensure_ascii=False, indent=4)
+            json.dump(document[0]["config"], target, ensure_ascii=False, indent=4)
             target.write("\n")
     except OSError:
         pass
@@ -175,7 +198,7 @@ def save_config(config_file, config):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".{}.tmp".format(uuid.uuid4().hex))
     with temporary.open("w", encoding="utf-8") as target:
-        json.dump({"config": config}, target, ensure_ascii=False, indent=4)
+        json.dump(config, target, ensure_ascii=False, indent=4)
         target.write("\n")
     temporary.replace(path)
 
@@ -217,6 +240,7 @@ def load_homework_data(homework_file, legacy_config_file=None):
 
 def save_homework_data(homework_file, data):
     path = Path(homework_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".{}.tmp".format(uuid.uuid4().hex))
     if isinstance(data, list):
         normalized = {}

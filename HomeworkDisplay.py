@@ -33,7 +33,7 @@ from HWMRuntime import (
 	wait_for_shutdown,
 	set_window_icon,
 )
-from HWMConfig import DEFAULT_CONFIG, load_config, load_homework_data
+from HWMConfig import DEFAULT_CONFIG, data_directory, load_config, load_homework_data
 
 
 APPLICATION_DIR = (
@@ -42,8 +42,9 @@ APPLICATION_DIR = (
 	else Path(__file__).resolve().parent
 )
 RESOURCE_DIR = APPLICATION_DIR
-CONFIG_FILE = RESOURCE_DIR / "config.json"
-HOMEWORK_FILE = RESOURCE_DIR / "homework.json"
+DATA_DIR = data_directory(RESOURCE_DIR)
+CONFIG_FILE = DATA_DIR / "config.json"
+HOMEWORK_FILE = DATA_DIR / "homework.json"
 SUBJECT_NAMES = {
 	"chinese": "语文",
 	"maths": "数学",

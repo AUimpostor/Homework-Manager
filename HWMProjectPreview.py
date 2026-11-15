@@ -21,7 +21,7 @@ import tkinter as tk
 from tkinter import ttk
 from pathlib import Path
 
-from HWMConfig import load_config, load_homework_data
+from HWMConfig import data_directory, load_config, load_homework_data
 from HWMRuntime import (
     close_shutdown_event,
     configure_tk_scaling,
@@ -39,8 +39,9 @@ APPLICATION_DIR = (
     if getattr(sys, "frozen", False)
     else Path(__file__).resolve().parent
 )
-CONFIG_FILE = APPLICATION_DIR / "config.json"
-HOMEWORK_FILE = APPLICATION_DIR / "homework.json"
+DATA_DIR = data_directory(APPLICATION_DIR)
+CONFIG_FILE = DATA_DIR / "config.json"
+HOMEWORK_FILE = DATA_DIR / "homework.json"
 SUBJECT_NAMES = {
     "chinese": "语文", "maths": "数学", "english": "英语", "history": "历史",
     "politics": "政治", "physics": "物理", "chemistry": "化学", "biology": "生物",

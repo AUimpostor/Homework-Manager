@@ -19,6 +19,7 @@ import json
 import sys
 import threading
 import copy
+import shutil
 from datetime import datetime
 import tkinter as tk
 from pathlib import Path
@@ -32,13 +33,14 @@ from HWMRuntime import (
     enable_high_dpi,
     enable_touch_keyboard,
     notify_config_saved,
+    show_windows_notification,
     place_window_bottom_right,
     set_window_size_percent,
     wait_for_config_reload,
     wait_for_shutdown,
     set_window_icon,
 )
-from HWMConfig import load_config, load_homework_data, save_homework_data
+from HWMConfig import data_directory, load_config, load_homework_data, save_config, save_homework_data
 
 
 APPLICATION_DIR = (
@@ -47,8 +49,9 @@ APPLICATION_DIR = (
     else Path(__file__).resolve().parent
 )
 RESOURCE_DIR = APPLICATION_DIR
-CONFIG_FILE = RESOURCE_DIR / "config.json"
-HOMEWORK_FILE = RESOURCE_DIR / "homework.json"
+DATA_DIR = data_directory(RESOURCE_DIR)
+CONFIG_FILE = DATA_DIR / "config.json"
+HOMEWORK_FILE = DATA_DIR / "homework.json"
 SUBJECT_NAMES = {
     "chinese": "语文",
     "maths": "数学",
@@ -243,23 +246,39 @@ class HomeworkEditor:
         self.assignment_list.configure(yscrollcommand=scrollbar.set)
 
         buttons = ttk.Frame(assignment_frame)
-        buttons.grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 0))
-        self.add_button = ttk.Button(buttons, text="添加...", command=self.add_assignment)
-        self.add_button.pack(side="left", padx=(0, 4))
-        self.edit_button = ttk.Button(buttons, text="编辑...", command=self.edit_assignment, state="disabled")
-        self.edit_button.pack(side="left", padx=(0, 4))
-        self.toggle_button = ttk.Button(
-            buttons, text="显示/隐藏", command=self.toggle_assignment
+        buttons.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        buttons.columnconfigure(0, weight=1)
+        button_group = ttk.Frame(buttons)
+        button_group.grid(row=0, column=0, sticky="w")
+        self.action_specs = [
+            ("add", "添加...", self.add_assignment), ("edit", "编辑...", self.edit_assignment),
+            ("toggle", "显示/隐藏", self.toggle_assignment), ("delete", "删除", self.delete_assignment),
+            ("up", "上置", self.move_up_assignment), ("down", "下置", self.move_down_assignment),
+            ("toggle_all", "隐藏所有", self.toggle_all_assignments),
+            ("delete_all", "删除所有", self.delete_all_assignments),
+        ]
+        self.action_buttons = {}
+        order = self.config.get("editor_action_order", [key for key, _, _ in self.action_specs])
+        ordered_specs = sorted(self.action_specs, key=lambda item: order.index(item[0]) if item[0] in order else len(order))
+        for position, (key, label, command) in enumerate(ordered_specs):
+            button = ttk.Button(button_group, text=label, command=command)
+            button.pack(side="left", padx=(0, 4))
+            self.action_buttons[key] = button
+        self.add_button = self.action_buttons["add"]
+        self.edit_button = self.action_buttons["edit"]
+        self.toggle_button = self.action_buttons["toggle"]
+        self.delete_button = self.action_buttons["delete"]
+        self.move_up_button = self.action_buttons["up"]
+        self.move_down_button = self.action_buttons["down"]
+        self.toggle_all_button = self.action_buttons["toggle_all"]
+        visible_actions = set(self.config.get("editor_visible_actions", []))
+        for action_key, action_button in self.action_buttons.items():
+            if action_key not in visible_actions:
+                action_button.pack_forget()
+        self.all_actions_button = ttk.Button(
+            buttons, text="...", command=self.open_all_actions, width=2
         )
-        self.toggle_button.pack(side="left", padx=(0, 4))
-        self.delete_button = ttk.Button(buttons, text="删除", command=self.delete_assignment, state="disabled")
-        self.delete_button.pack(side="left", padx=(0, 4))
-        self.move_up_button = ttk.Button(buttons, text="上置", command=self.move_up_assignment, state="disabled", width=4)
-        self.move_up_button.pack(side="left", padx=(0, 2))
-        self.move_down_button = ttk.Button(buttons, text="下置", command=self.move_down_assignment, state="disabled", width=4)
-        self.move_down_button.pack(side="left", padx=(0, 4))
-        self.toggle_all_button = ttk.Button(buttons, text="隐藏所有", command=self.toggle_all_assignments)
-        self.toggle_all_button.pack(side="left")
+        self.all_actions_button.grid(row=0, column=1, sticky="e", padx=(8, 0))
 
         bottom = ttk.Frame(main)
         bottom.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
@@ -269,13 +288,282 @@ class HomeworkEditor:
         self.undo_button.grid(row=0, column=1, sticky="e", padx=(0, 4))
         self.redo_button = ttk.Button(bottom, text="恢复", command=self.redo, state="disabled")
         self.redo_button.grid(row=0, column=2, sticky="e", padx=(0, 4))
-        ttk.Button(bottom, text="保存项目", command=self.save).grid(
-            row=0, column=3, sticky="e"
+        self.save_button = ttk.Button(bottom, text="保存项目", command=self.save)
+        self.backup_button = ttk.Button(
+            bottom, text="项目备份管理", command=lambda: self.open_homework_backup_manager(self.root)
         )
+        self.management_toolbar_buttons = {
+            "undo": self.undo_button,
+            "redo": self.redo_button,
+            "save": self.save_button,
+            "backup": self.backup_button,
+        }
+        self.all_management_button = ttk.Button(
+            bottom, text="...", command=self.open_all_management, width=2
+        )
+        self.all_management_button.grid(row=0, column=4, sticky="e")
+        self._apply_management_action_visibility()
 
     @staticmethod
     def _subject_name(subject):
         return SUBJECT_NAMES.get(subject, subject or "未选择科目")
+
+    def open_all_actions(self):
+        subject = self.selected_subject.get()
+        dialog = tk.Toplevel(self.root)
+        set_window_icon(dialog, __file__)
+        dialog.title("所有项目操作")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        self.all_actions_dialog = dialog
+        dialog.minsize(260, 120)
+        configure_tk_scaling(dialog)
+        frame = ttk.Frame(dialog, padding=14)
+        frame.pack(fill="both", expand=True)
+        selection = self.assignment_list.curselection()
+        assignments = self.homework.get(subject, []) if subject else []
+        project = assignments[selection[0]]["project"] if selection and selection[0] < len(assignments) else "全部项目"
+        project = project.replace("\r\n", "\n").replace("\r", "\n")
+        project = project.split("\n", 1)[0].strip()
+        project = " ".join(project.split())
+        if len(project) > 24:
+            project = project[:23] + "..."
+        ttk.Label(
+            frame,
+            text="对 {} 或其中的\n {} 进行……".format(self._subject_name(subject), project),
+        ).pack(anchor="w", pady=(0, 10))
+        actions = ttk.Frame(frame)
+        actions.pack(fill="x")
+        self.all_action_rows = {}
+        visible = set(self.config.get("editor_visible_actions", [key for key, _, _ in self.action_specs]))
+        order = self.config.get("editor_action_order", [key for key, _, _ in self.action_specs])
+        ordered_specs = sorted(self.action_specs, key=lambda item: order.index(item[0]) if item[0] in order else len(order))
+        for key, label, command in ordered_specs:
+            row = ttk.Frame(actions)
+            row.pack(fill="x", pady=2)
+            self.all_action_rows[key] = row
+            button = ttk.Button(row, text=self.toggle_all_button.cget("text") if key == "toggle_all" else label,
+                                command=command, state=self.action_buttons[key].cget("state"))
+            button.pack(side="left", fill="x", expand=True)
+            selected = tk.BooleanVar(value=key in visible)
+            ttk.Checkbutton(row, variable=selected, command=lambda k=key, v=selected: self.set_action_visible(k, v.get())).pack(side="right", padx=(8, 0))
+            ttk.Button(row, text="↓", width=1.2, command=lambda k=key: self.move_action_order(k, 1)).pack(side="right", padx=(2, 0))
+            ttk.Button(row, text="↑", width=1.2, command=lambda k=key: self.move_action_order(k, -1)).pack(side="right", padx=(2, 0))
+        def close_dialog():
+            if getattr(self, "all_actions_dialog", None) is dialog:
+                self.all_actions_dialog = None
+            dialog.destroy()
+
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        place_window_bottom_right(dialog)
+
+    def open_all_management(self):
+        dialog = tk.Toplevel(self.root)
+        set_window_icon(dialog, __file__)
+        dialog.title("所有管理操作")
+        self.all_management_dialog = dialog
+        dialog.transient(self.root)
+        dialog.grab_set()
+        configure_tk_scaling(dialog)
+        frame = ttk.Frame(dialog, padding=14)
+        frame.pack(fill="both", expand=True)
+        actions = [
+            ("undo", "撤销", self.undo, self.undo_button),
+            ("redo", "恢复", self.redo, self.redo_button),
+            ("save", "保存项目", self.save, None),
+            ("backup", "项目备份管理", lambda: self.open_homework_backup_manager(dialog), None),
+        ]
+        self.management_action_buttons = {}
+        visible = set(self.config.get("editor_visible_management_actions", [key for key, *_ in actions]))
+        order = self.config.get("editor_management_action_order", [key for key, *_ in actions])
+        ordered = sorted(actions, key=lambda item: order.index(item[0]) if item[0] in order else len(order))
+        for key, label, command, state_source in ordered:
+            row = ttk.Frame(frame)
+            row.pack(fill="x", pady=2)
+            button = ttk.Button(row, text=label, command=command,
+                                state=state_source.cget("state") if state_source else "normal")
+            button.pack(side="left", fill="x", expand=True)
+            self.management_action_buttons[key] = button
+            selected = tk.BooleanVar(value=key in visible)
+            ttk.Checkbutton(row, variable=selected, command=lambda k=key, v=selected: self.set_management_action_visible(k, v.get())).pack(side="right", padx=(8, 0))
+            ttk.Button(row, text="↓", width=1.2, command=lambda k=key: self.move_management_action_order(k, 1)).pack(side="right", padx=(2, 0))
+            ttk.Button(row, text="↑", width=1.2, command=lambda k=key: self.move_management_action_order(k, -1)).pack(side="right", padx=(2, 0))
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        place_window_bottom_right(dialog)
+
+    def _management_action_specs(self):
+        return [("undo", "撤销", self.undo, self.undo_button), ("redo", "恢复", self.redo, self.redo_button),
+                ("save", "保存项目", self.save, None),
+                ("backup", "项目备份管理", lambda: self.open_homework_backup_manager(self.root), None)]
+
+    def move_management_action_order(self, key, direction):
+        keys = [item[0] for item in self._management_action_specs()]
+        order = self.config.get("editor_management_action_order", keys.copy())
+        order = [item for item in order if item in keys]
+        order.extend(item for item in keys if item not in order)
+        target = order.index(key) + direction
+        if target < 0 or target >= len(order):
+            return
+        order[order.index(key)], order[target] = order[target], order[order.index(key)]
+        self.config["editor_management_action_order"] = order
+        save_config(CONFIG_FILE, self.config)
+        dialog = getattr(self, "all_management_dialog", None)
+        if dialog and dialog.winfo_exists():
+            dialog.destroy()
+            self.open_all_management()
+
+    def set_management_action_visible(self, key, visible):
+        keys = [item[0] for item in self._management_action_specs()]
+        actions = set(self.config.get("editor_visible_management_actions", keys))
+        (actions.add if visible else actions.discard)(key)
+        self.config["editor_visible_management_actions"] = [item for item in keys if item in actions]
+        save_config(CONFIG_FILE, self.config)
+        self._apply_management_action_visibility()
+        dialog = getattr(self, "all_management_dialog", None)
+        if dialog and dialog.winfo_exists():
+            dialog.destroy()
+            self.open_all_management()
+
+    def _apply_management_action_visibility(self):
+        visible = set(self.config.get("editor_visible_management_actions", ["undo", "redo", "save"]))
+        keys = [item[0] for item in self._management_action_specs()]
+        order = self.config.get("editor_management_action_order", keys)
+        ordered = [key for key in order if key in keys]
+        ordered.extend(key for key in keys if key not in ordered)
+        column = 1
+        for key in ordered:
+            widget = self.management_toolbar_buttons[key]
+            if key in visible:
+                widget.grid(row=0, column=column, sticky="e", padx=(0, 4))
+                column += 1
+            else:
+                widget.grid_remove()
+        self.all_management_button.grid(row=0, column=column, sticky="e")
+
+    def open_homework_backup_manager(self, parent):
+        backup_dir = DATA_DIR / "backup"
+        backups = sorted(
+            (path for path in backup_dir.glob("homework*.json.bak") if path.is_file()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        dialog = tk.Toplevel(parent)
+        set_window_icon(dialog, __file__)
+        dialog.title("项目备份管理")
+        dialog.transient(parent)
+        dialog.grab_set()
+        configure_tk_scaling(dialog)
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(1, weight=1)
+        ttk.Label(dialog, text="选择要恢复的项目备份：").grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 6))
+        backup_list = tk.Listbox(dialog, exportselection=False)
+        backup_list.grid(row=1, column=0, sticky="nsew", padx=(10, 0), pady=(0, 8))
+        scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=backup_list.yview)
+        scrollbar.grid(row=1, column=1, sticky="ns", padx=(0, 10), pady=(0, 8))
+        backup_list.configure(yscrollcommand=scrollbar.set)
+        for backup in backups:
+            backup_list.insert(tk.END, backup.name)
+        if backups:
+            backup_list.selection_set(0)
+        else:
+            backup_list.insert(tk.END, "没有可用的项目备份")
+            backup_list.configure(state="disabled")
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=2, column=0, columnspan=2, sticky="e", padx=10, pady=(0, 10))
+
+        def refresh():
+            backups[:] = sorted((p for p in backup_dir.glob("homework*.json.bak") if p.is_file()), key=lambda p: p.stat().st_mtime, reverse=True)
+            backup_list.configure(state="normal")
+            backup_list.delete(0, tk.END)
+            for path in backups:
+                backup_list.insert(tk.END, path.name)
+            if backups:
+                backup_list.selection_set(0)
+            else:
+                backup_list.insert(tk.END, "没有可用的项目备份")
+                backup_list.configure(state="disabled")
+
+        def restore():
+            selection = backup_list.curselection()
+            if not selection or not backups:
+                return
+            if not messagebox.askyesno("恢复项目备份", "恢复后，当前项目数据将被备份覆盖。继续吗？", parent=dialog):
+                return
+            try:
+                backup_dir.mkdir(parents=True, exist_ok=True)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                shutil.copy2(HOMEWORK_FILE, backup_dir / "homework_{}.json.bak".format(timestamp))
+                shutil.copy2(backups[selection[0]], HOMEWORK_FILE)
+                self.homework, self.config = load_homework()
+                self.refresh_subjects()
+                self.undo_stack.clear()
+                self.redo_stack.clear()
+                self._update_history_buttons()
+                notify_config_saved()
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                messagebox.showerror("恢复失败", str(error), parent=dialog)
+                return
+            dialog.destroy()
+
+        def delete():
+            selection = backup_list.curselection()
+            if not selection or not backups:
+                return
+            if not messagebox.askyesno("确认删除", "确定删除此项目备份吗？此操作不可恢复。", parent=dialog):
+                return
+            try:
+                backups[selection[0]].unlink()
+            except OSError as error:
+                messagebox.showerror("删除失败", str(error), parent=dialog)
+                return
+            refresh()
+
+        ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side="right")
+        ttk.Button(buttons, text="恢复", command=restore, state="normal" if backups else "disabled").pack(side="right", padx=(0, 8))
+        ttk.Button(buttons, text="删除", command=delete, state="normal" if backups else "disabled").pack(side="right", padx=(0, 8))
+        backup_list.bind("<Double-Button-1>", lambda _event: restore())
+        place_window_bottom_right(dialog)
+
+    def move_action_order(self, key, direction):
+        keys = [item[0] for item in self.action_specs]
+        order = self.config.get("editor_action_order", keys.copy())
+        order = [item for item in order if item in keys]
+        order.extend(item for item in keys if item not in order)
+        position = order.index(key)
+        target = position + direction
+        if target < 0 or target >= len(order):
+            return
+        order[position], order[target] = order[target], order[position]
+        self.config["editor_action_order"] = order
+        save_config(CONFIG_FILE, self.config)
+        visible = set(self.config.get("editor_visible_actions", keys))
+        for action_key in order:
+            button = self.action_buttons[action_key]
+            button.pack_forget()
+            if action_key in visible:
+                button.pack(side="left", padx=(0, 4))
+        dialog = getattr(self, "all_actions_dialog", None)
+        if dialog is not None and dialog.winfo_exists():
+            for action_key in order:
+                row = getattr(self, "all_action_rows", {}).get(action_key)
+                if row is not None and row.winfo_exists():
+                    row.pack_forget()
+                    row.pack(fill="x", pady=2)
+
+    def set_action_visible(self, key, visible):
+        actions = set(self.config.get("editor_visible_actions", [item[0] for item in self.action_specs]))
+        if visible:
+            actions.add(key)
+        else:
+            actions.discard(key)
+        self.config["editor_visible_actions"] = [item[0] for item in self.action_specs if item[0] in actions]
+        save_config(CONFIG_FILE, self.config)
+        for action_key, _, _ in self.action_specs:
+            button = self.action_buttons[action_key]
+            if action_key in actions:
+                button.pack(side="left", padx=(0, 4))
+            else:
+                button.pack_forget()
 
     def _context_status(self, action, subject=None, project=None):
         subject = subject if subject is not None else self.selected_subject.get()
@@ -542,7 +830,7 @@ class HomeworkEditor:
     def delete_assignment(self):
         selection = self.assignment_list.curselection()
         subject = self.selected_subject.get()
-        if not selection or not subject:
+        if not subject or not selection:
             messagebox.showwarning("未选择项目", "请先选择要删除的项目项。", parent=self.root)
             return
         if not messagebox.askyesno("确认删除", "确定删除选中的项目项吗？", parent=self.root):
@@ -553,6 +841,26 @@ class HomeworkEditor:
         del self.homework[subject][index]
         self.refresh_assignments(index)
         self._context_status("已删除", subject, project)
+        dialog = getattr(self, "all_actions_dialog", None)
+        if dialog is not None and dialog.winfo_exists():
+            dialog.destroy()
+            self.all_actions_dialog = None
+
+    def delete_all_assignments(self):
+        subject = self.selected_subject.get()
+        assignments = self.homework.get(subject, []) if subject else []
+        if not assignments:
+            return
+        if not messagebox.askyesno("确认删除", "确定删除 {} 中的所有项目吗？此操作可撤销。".format(self._subject_name(subject)), parent=self.root):
+            return
+        self._record_undo()
+        self.homework[subject] = []
+        self.refresh_assignments()
+        self._context_status("已删除全部项目", subject, "全部项目")
+        dialog = getattr(self, "all_actions_dialog", None)
+        if dialog is not None and dialog.winfo_exists():
+            dialog.destroy()
+            self.all_actions_dialog = None
 
     def _move_assignment(self, direction):
         selection = self.assignment_list.curselection()
@@ -588,11 +896,14 @@ class HomeworkEditor:
             return
         self._context_status("已保存到 homework.json")
         notify_config_saved()
-        messagebox.showinfo("保存成功", "项目列表已保存到 homework.json。", parent=self.root)
+        show_windows_notification("已保存项目")
 
 
 def main():
     enable_high_dpi()
+    from HWMRuntime import acquire_single_instance
+    if not acquire_single_instance("homework_editor"):
+        return
     root = tk.Tk()
     try:
         HomeworkEditor(root)

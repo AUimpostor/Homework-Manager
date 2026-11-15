@@ -37,10 +37,55 @@ SHUTDOWN_EVENTS = {
     "subscription_manager": "Local\\HomeworkSubscriptionManagerShutdown",
     "project_preview": "Local\\HomeworkProjectPreviewShutdown",
 }
+
+_INSTANCE_MUTEX_HANDLES = []
+
+
+def acquire_single_instance(component):
+    """Keep at most one process for each named UI component on Windows."""
+    if sys.platform != "win32":
+        return True
+    names = {
+        "dashboard": "Local\\HomeworkConfigEditorInstance",
+        "homework_editor": "Local\\HomeworkProjectEditorInstance",
+        "subscription_manager": "Local\\HomeworkSubscriptionManagerInstance",
+    }
+    if component not in names:
+        raise ValueError("Unknown single-instance component: {}".format(component))
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.GetLastError.restype = ctypes.c_ulong
+    handle = kernel32.CreateMutexW(None, False, names[component])
+    if not handle:
+        return True
+    if kernel32.GetLastError() == 183:
+        kernel32.CloseHandle(handle)
+        return False
+    _INSTANCE_MUTEX_HANDLES.append(handle)
+    return True
 MAIN_CONTROL_EVENTS = {
     "exit": "Local\\HomeworkManagerExit",
     "restart": "Local\\HomeworkManagerRestart",
 }
+
+WINDOW_GROUP_MUTEX = "Local\\HomeworkManagerExclusiveWindow"
+
+
+def acquire_window_group_mutex():
+    """Allow only one dashboard/editor/manager process at a time."""
+    if sys.platform != "win32":
+        return True
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.GetLastError.restype = ctypes.c_ulong
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    handle = kernel32.CreateMutexW(None, False, WINDOW_GROUP_MUTEX)
+    if not handle:
+        return True
+    if kernel32.GetLastError() == 183:
+        kernel32.CloseHandle(handle)
+        return False
+    return handle
 
 
 def enable_high_dpi():
@@ -226,6 +271,19 @@ def notify_config_saved():
         if event:
             kernel32.SetEvent(event)
             kernel32.CloseHandle(event)
+
+
+def show_windows_notification(message, title="Homework Manager"):
+    """Show a native Windows toast without interrupting the save flow."""
+    if sys.platform != "win32":
+        return
+    try:
+        from winotify import Notification
+        from HWMAppIdentity import APP_ID
+
+        Notification(app_id=APP_ID, title=title, msg=message).show()
+    except Exception:
+        pass
 
 
 def create_config_reload_event(component="display"):
