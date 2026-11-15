@@ -105,7 +105,7 @@ def _unprotect(value):
     crypt32.CryptUnprotectData.argtypes = [ctypes.POINTER(_Blob), ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(_Blob)]
     crypt32.CryptUnprotectData.restype = ctypes.c_bool
     if not crypt32.CryptUnprotectData(ctypes.byref(source), None, None, None, None, 1, ctypes.byref(result)):
-        raise OSError("无法解密 SMTP 密码；请在设置中重新输入")
+        raise OSError("无法解密 SMTP 密码；请在配置中重新输入")
     try:
         return ctypes.string_at(result.pbData, result.cbData).decode("utf-8")
     finally:

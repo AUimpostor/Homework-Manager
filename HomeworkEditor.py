@@ -20,6 +20,7 @@ import sys
 import threading
 import copy
 import shutil
+import subprocess
 from datetime import datetime
 import tkinter as tk
 from pathlib import Path
@@ -67,6 +68,39 @@ SUBJECT_NAMES = {
     "art": "美术",
     "other": "其他",
 }
+SCHEDULE_VISIBLE_COLOR = "#69C8D0"
+SCHEDULE_HIDDEN_COLOR = "#315E7D"
+
+
+def scheduled_today(rules, today=None):
+    today = today or datetime.now().date()
+    weekday = today.weekday() + 1
+    month_week = (today.day - 1) // 7 + 1
+    for rule in rules or []:
+        if not isinstance(rule, dict):
+            continue
+        cycle = rule.get("cycle")
+        if cycle == "每天":
+            return True
+        if cycle == "每周" and rule.get("weekday") == weekday:
+            return True
+        if cycle == "每月":
+            if rule.get("kind") == "某日" and rule.get("day") == today.day:
+                return True
+            if rule.get("kind") == "某周":
+                week = rule.get("week")
+                if rule.get("day_type") == "整周" and week == month_week:
+                    return True
+                if rule.get("day_type") == "某日" and week == month_week and rule.get("weekday") == weekday:
+                    return True
+    return False
+
+
+def refresh_scheduled_projects(homework):
+    for assignments in homework.values():
+        for assignment in assignments:
+            if assignment.get("schedule_rules"):
+                assignment["hide"] = not scheduled_today(assignment["schedule_rules"])
 
 def load_homework():
     homework = {}
@@ -108,6 +142,7 @@ def load_homework():
                             "ignore_prefix": assignment.get("ignore_prefix", False) is True,
                             "ignore_suffix": assignment.get("ignore_suffix", False) is True,
                             "secondary": assignment.get("secondary", False) is True,
+                            "schedule_rules": assignment.get("schedule_rules", []) if isinstance(assignment.get("schedule_rules", []), list) else [],
                                 "date_modified": assignment.get(
                                     "date_modified", current_time()
                                 ),
@@ -232,6 +267,7 @@ class HomeworkEditor:
             assignment_frame,
             exportselection=False,
             selectmode=tk.SINGLE,
+            font=("Microsoft YaHei UI", 10),
         )
         self.assignment_list.grid(row=0, column=0, sticky="nsew")
         self.assignment_list.bind("<<ListboxSelect>>", self.on_assignment_selected)
@@ -253,6 +289,7 @@ class HomeworkEditor:
         self.action_specs = [
             ("add", "添加...", self.add_assignment), ("edit", "编辑...", self.edit_assignment),
             ("toggle", "显示/隐藏", self.toggle_assignment), ("delete", "删除", self.delete_assignment),
+            ("copy", "复制", self.copy_assignment), ("move_subject", "移动到...", self.move_assignment_subject),
             ("up", "上置", self.move_up_assignment), ("down", "下置", self.move_down_assignment),
             ("toggle_all", "隐藏所有", self.toggle_all_assignments),
             ("delete_all", "删除所有", self.delete_all_assignments),
@@ -268,6 +305,8 @@ class HomeworkEditor:
         self.edit_button = self.action_buttons["edit"]
         self.toggle_button = self.action_buttons["toggle"]
         self.delete_button = self.action_buttons["delete"]
+        self.copy_button = self.action_buttons["copy"]
+        self.move_subject_button = self.action_buttons["move_subject"]
         self.move_up_button = self.action_buttons["up"]
         self.move_down_button = self.action_buttons["down"]
         self.toggle_all_button = self.action_buttons["toggle_all"]
@@ -292,11 +331,15 @@ class HomeworkEditor:
         self.backup_button = ttk.Button(
             bottom, text="项目备份管理", command=lambda: self.open_homework_backup_manager(self.root)
         )
+        self.dashboard_button = ttk.Button(
+            bottom, text="仪表盘...", command=self.open_dashboard
+        )
         self.management_toolbar_buttons = {
             "undo": self.undo_button,
             "redo": self.redo_button,
             "save": self.save_button,
             "backup": self.backup_button,
+            "dashboard": self.dashboard_button,
         }
         self.all_management_button = ttk.Button(
             bottom, text="...", command=self.open_all_management, width=2
@@ -372,6 +415,7 @@ class HomeworkEditor:
             ("redo", "恢复", self.redo, self.redo_button),
             ("save", "保存项目", self.save, None),
             ("backup", "项目备份管理", lambda: self.open_homework_backup_manager(dialog), None),
+            ("dashboard", "仪表盘...", self.open_dashboard, None),
         ]
         self.management_action_buttons = {}
         visible = set(self.config.get("editor_visible_management_actions", [key for key, *_ in actions]))
@@ -394,7 +438,18 @@ class HomeworkEditor:
     def _management_action_specs(self):
         return [("undo", "撤销", self.undo, self.undo_button), ("redo", "恢复", self.redo, self.redo_button),
                 ("save", "保存项目", self.save, None),
-                ("backup", "项目备份管理", lambda: self.open_homework_backup_manager(self.root), None)]
+                ("backup", "项目备份管理", lambda: self.open_homework_backup_manager(self.root), None),
+                ("dashboard", "仪表盘...", self.open_dashboard, None)]
+
+    def open_dashboard(self):
+        if getattr(sys, "frozen", False):
+            command = [sys.executable, "--component", "dashboard"]
+        else:
+            executable = Path(sys.executable).with_name("pythonw.exe")
+            command = [str(executable if executable.exists() else sys.executable),
+                       str(APPLICATION_DIR / "HWMConfigEditor.py")]
+        subprocess.Popen(command, cwd=str(APPLICATION_DIR),
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
     def move_management_action_order(self, key, direction):
         keys = [item[0] for item in self._management_action_specs()]
@@ -644,7 +699,9 @@ class HomeworkEditor:
             if assignment["hide"]:
                 display_text = "• " + display_text
             self.assignment_list.insert(tk.END, display_text)
-            if assignment["hide"]:
+            if assignment.get("schedule_rules"):
+                self.assignment_list.itemconfig(index, foreground=SCHEDULE_VISIBLE_COLOR if assignment["hide"] else SCHEDULE_HIDDEN_COLOR)
+            elif assignment["hide"]:
                 self.assignment_list.itemconfig(index, foreground="#aaaaaa")
         if assignments:
             index = 0 if assignment_index is None else min(
@@ -681,11 +738,16 @@ class HomeworkEditor:
         )
         self.edit_button.configure(state="normal" if has_selection else "disabled")
         self.delete_button.configure(state="normal" if has_selection else "disabled")
+        self.copy_button.configure(state="normal" if has_selection else "disabled")
+        self.move_subject_button.configure(state="normal" if has_selection else "disabled")
         if has_selection:
             index = selection[0]
-            hidden = self.homework[subject][index]["hide"]
+            selected_assignment = self.homework[subject][index]
+            scheduled = bool(selected_assignment.get("schedule_rules"))
+            hidden = selected_assignment["hide"]
             self.toggle_button.configure(
-                text="显示" if hidden else "隐藏", state="normal"
+                text="由计划控制" if scheduled else ("显示" if hidden else "隐藏"),
+                state="disabled" if scheduled else "normal"
             )
             self.move_up_button.configure(state="normal" if index > 0 else "disabled")
             self.move_down_button.configure(state="normal" if index < total - 1 else "disabled")
@@ -733,11 +795,13 @@ class HomeworkEditor:
         ignore_prefix_var = tk.BooleanVar(value=current_assignment.get("ignore_prefix", False))
         ignore_suffix_var = tk.BooleanVar(value=current_assignment.get("ignore_suffix", False))
         secondary_var = tk.BooleanVar(value=current_assignment.get("secondary", False))
+        schedule_rules = copy.deepcopy(current_assignment.get("schedule_rules", []))
         property_row = ttk.Frame(form)
         property_row.grid(row=2, column=0, sticky="w", pady=(8, 0))
         ttk.Checkbutton(property_row, text="忽略前缀", variable=ignore_prefix_var).pack(side="left", padx=(0, 12))
         ttk.Checkbutton(property_row, text="忽略后缀", variable=ignore_suffix_var).pack(side="left", padx=(0, 12))
         ttk.Checkbutton(property_row, text="次要项目", variable=secondary_var).pack(side="left")
+        ttk.Button(property_row, text="计划项目", command=lambda: self._schedule_rules_dialog(dialog, schedule_rules)).pack(side="left", padx=(12, 0))
 
         def save_assignment():
             value = editor.get("1.0", "end-1c").strip()
@@ -752,6 +816,7 @@ class HomeworkEditor:
                 self.homework[subject][assignment_index]["ignore_prefix"] = ignore_prefix_var.get()
                 self.homework[subject][assignment_index]["ignore_suffix"] = ignore_suffix_var.get()
                 self.homework[subject][assignment_index]["secondary"] = secondary_var.get()
+                self.homework[subject][assignment_index]["schedule_rules"] = schedule_rules
                 self.homework[subject][assignment_index]["date_modified"] = now
                 selected_index = assignment_index
                 self._context_status("已编辑", subject, value)
@@ -763,10 +828,12 @@ class HomeworkEditor:
                     "ignore_prefix": ignore_prefix_var.get(),
                     "ignore_suffix": ignore_suffix_var.get(),
                     "secondary": secondary_var.get(),
+                    "schedule_rules": schedule_rules,
                     "date_modified": now,
                 })
                 selected_index = len(self.homework[subject]) - 1
                 self._context_status("已添加", subject, value)
+            refresh_scheduled_projects(self.homework)
             self.refresh_assignments(selected_index)
             dialog.destroy()
 
@@ -779,6 +846,77 @@ class HomeworkEditor:
         dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
         dialog.after_idle(editor.focus_set)
         place_window_bottom_right(dialog)
+
+    def _schedule_rules_dialog(self, parent, rules):
+        window = tk.Toplevel(parent); window.title("配置计划规则"); window.transient(parent); window.grab_set()
+        frame = ttk.Frame(window, padding=12); frame.pack(fill="both", expand=True)
+        listing = tk.Listbox(frame, height=7, width=48); listing.pack(fill="both", expand=True)
+        def label(rule):
+            if rule["cycle"] == "每天": return "每天：每天"
+            if rule["cycle"] == "每周": return "每周：周的第{}日".format(rule["weekday"])
+            if rule["kind"] == "某日": return "每月：月的第{}日".format(rule["day"])
+            if rule["day_type"] == "整周": return "每月：月的第{}周（整周）".format(rule["week"])
+            return "每月：月的第{}周，周的第{}日".format(rule["week"], rule["weekday"])
+        def redraw():
+            listing.delete(0, tk.END)
+            for rule in rules: listing.insert(tk.END, label(rule))
+        def add():
+            d = tk.Toplevel(window); d.title("添加计划规则"); d.transient(window); d.grab_set()
+            f = ttk.Frame(d, padding=12); f.pack(fill="both", expand=True)
+            cycle = tk.StringVar(value="每天")
+            kind = tk.StringVar(value="某日")
+            daytype = tk.StringVar(value="每天")
+            month_number = tk.IntVar(value=1)
+            weekday = tk.IntVar(value=1)
+            previous_kind = [kind.get()]
+            rows = ttk.Frame(f); rows.pack(fill="both", expand=True, anchor="w")
+            def fields(*_):
+                for child in rows.winfo_children(): child.destroy()
+                ttk.Label(rows, text="周期").grid(row=0, column=0, sticky="w", pady=3)
+                ttk.Combobox(rows, textvariable=cycle, values=("每天", "每周", "每月"), state="readonly", width=14).grid(row=0, column=1, sticky="w", pady=3)
+                if cycle.get() == "每周":
+                    ttk.Label(rows, text="某日").grid(row=1, column=0, sticky="w", pady=3)
+                    ttk.Label(rows, text="周的第").grid(row=2, column=0, sticky="w", pady=3)
+                    ttk.Spinbox(rows, from_=1, to=7, textvariable=weekday, width=5).grid(row=2, column=1, sticky="w", pady=3)
+                    ttk.Label(rows, text="日").grid(row=2, column=2, sticky="w", pady=3)
+                elif cycle.get() == "每月":
+                    ttk.Label(rows, text="每月的").grid(row=1, column=0, sticky="w", pady=3)
+                    ttk.Combobox(rows, textvariable=kind, values=("某日", "某周"), state="readonly", width=14).grid(row=1, column=1, sticky="w", pady=3)
+                    ttk.Label(rows, text="月的第").grid(row=2, column=0, sticky="w", pady=3)
+                    ttk.Spinbox(rows, from_=1, to=(31 if kind.get() == "某日" else 5), textvariable=month_number, width=5).grid(row=2, column=1, sticky="w", pady=3)
+                    ttk.Label(rows, text="日" if kind.get() == "某日" else "周").grid(row=2, column=2, sticky="w", pady=3)
+                    if kind.get() == "某周":
+                        ttk.Label(rows, text="每周的").grid(row=3, column=0, sticky="w", padx=15, pady=3)
+                        ttk.Combobox(rows, textvariable=daytype, values=("每天", "某日"), state="readonly", width=14).grid(row=3, column=1, sticky="w", pady=3)
+                        if daytype.get() == "某日":
+                            ttk.Label(rows, text="周的第").grid(row=4, column=0, sticky="w", padx=15, pady=3)
+                            ttk.Spinbox(rows, from_=1, to=7, textvariable=weekday, width=5).grid(row=4, column=1, sticky="w", pady=3)
+                            ttk.Label(rows, text="日").grid(row=4, column=2, sticky="w", pady=3)
+            cycle.trace_add("write", fields)
+            def kind_changed(*_):
+                if kind.get() != previous_kind[0]:
+                    month_number.set(1)
+                    previous_kind[0] = kind.get()
+                fields()
+            kind.trace_add("write", kind_changed)
+            daytype.trace_add("write", fields)
+            fields()
+            def accept():
+                r={"cycle":cycle.get()}
+                if cycle.get()=="每周": r.update(weekday=weekday.get())
+                elif cycle.get()=="每月":
+                    r["kind"]=kind.get()
+                    if kind.get()=="某日": r["day"]=month_number.get()
+                    else:
+                        r.update(week=month_number.get(),day_type="每天" if daytype.get() == "每天" else "某日")
+                        if daytype.get()=="某日": r["weekday"]=weekday.get()
+                rules.append(r); redraw(); d.destroy()
+            ttk.Button(f,text="确定",command=accept).pack(anchor="e", pady=(10, 0))
+            configure_tk_scaling(d); set_window_size_percent(d, 28, 28); place_window_bottom_right(d)
+        bar=ttk.Frame(frame); bar.pack(fill="x")
+        ttk.Button(bar,text="添加",command=add).pack(side="left")
+        ttk.Button(bar,text="删除",command=lambda: (rules.pop(listing.curselection()[0]),redraw()) if listing.curselection() else None).pack(side="left",padx=6)
+        ttk.Button(bar,text="确定",command=window.destroy).pack(side="right"); redraw(); place_window_bottom_right(window)
 
     def add_assignment(self):
         subject = self.selected_subject.get()
@@ -795,6 +933,60 @@ class HomeworkEditor:
             return
         self._open_assignment_dialog(selection[0])
 
+    def _selected_assignment(self):
+        subject = self.selected_subject.get()
+        selection = self.assignment_list.curselection()
+        if not subject or not selection:
+            messagebox.showwarning("未选择项目", "请先选择要操作的项目。", parent=self.root)
+            return None, None, None
+        index = selection[0]
+        return subject, index, self.homework[subject][index]
+
+    def copy_assignment(self):
+        subject, index, assignment = self._selected_assignment()
+        if assignment is None:
+            return
+        self._record_undo()
+        duplicate = copy.deepcopy(assignment)
+        duplicate["date_modified"] = datetime.now().isoformat(timespec="seconds")
+        self.homework[subject].insert(index + 1, duplicate)
+        self.refresh_assignments(index + 1)
+        self._context_status("已复制", subject, duplicate.get("project"))
+
+    def move_assignment_subject(self):
+        source, index, assignment = self._selected_assignment()
+        if assignment is None:
+            return
+        subjects = list(self.homework)
+        dialog = tk.Toplevel(self.root)
+        set_window_icon(dialog, __file__)
+        dialog.title("移动项目")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        frame = ttk.Frame(dialog, padding=14)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="移动到科目：").pack(anchor="w", pady=(0, 6))
+        choices = [SUBJECT_NAMES.get(subject, subject) for subject in subjects]
+        target_var = tk.StringVar(value=SUBJECT_NAMES.get(source, source))
+        selector = ttk.Combobox(frame, state="readonly", values=choices, textvariable=target_var)
+        selector.pack(fill="x")
+        def confirm():
+            target = subjects[choices.index(target_var.get())]
+            dialog.destroy()
+            if target == source:
+                return
+            self._record_undo()
+            moved = self.homework[source].pop(index)
+            moved["date_modified"] = datetime.now().isoformat(timespec="seconds")
+            self.homework.setdefault(target, []).append(moved)
+            self.refresh_subjects(target)
+            self.refresh_assignments(len(self.homework[target]) - 1)
+            self._context_status("已移动", target, moved.get("project"))
+        buttons = ttk.Frame(frame); buttons.pack(fill="x", pady=(10, 0))
+        ttk.Button(buttons, text="确定", command=confirm).pack(side="right")
+        ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side="right", padx=(0, 6))
+        configure_tk_scaling(dialog); place_window_bottom_right(dialog)
+
     def toggle_assignment(self):
         selection = self.assignment_list.curselection()
         subject = self.selected_subject.get()
@@ -803,6 +995,8 @@ class HomeworkEditor:
             return
         index = selection[0]
         assignment = self.homework[subject][index]
+        if assignment.get("schedule_rules"):
+            return
         self._record_undo()
         assignment["hide"] = not assignment["hide"]
         assignment["date_modified"] = datetime.now().isoformat(timespec="seconds")
@@ -819,6 +1013,8 @@ class HomeworkEditor:
         self._record_undo()
         now = datetime.now().isoformat(timespec="seconds")
         for assignment in assignments:
+            if assignment.get("schedule_rules"):
+                continue
             if assignment["hide"] != (not show_all):
                 assignment["hide"] = not show_all
                 assignment["date_modified"] = now
@@ -890,11 +1086,13 @@ class HomeworkEditor:
 
     def save(self):
         try:
+            refresh_scheduled_projects(self.homework)
             save_homework(self.homework)
         except (OSError, TypeError, ValueError) as error:
             messagebox.showerror("保存失败", str(error), parent=self.root)
             return
         self._context_status("已保存到 homework.json")
+        self.refresh_assignments()
         notify_config_saved()
         show_windows_notification("已保存项目")
 

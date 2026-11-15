@@ -108,7 +108,7 @@ class SubscriptionManager:
         self.smtp_status_label = ttk.Label(smtp, textvariable=self.smtp_status, foreground="#777777")
         self.smtp_status_label.grid(row=4, column=0, sticky="w", pady=(2, 0))
         ttk.Button(smtp, text="刷新 SMTP 状态", command=self._check_smtp_connection).grid(row=4, column=1, sticky="e", padx=8, pady=(2, 0))
-        ttk.Button(smtp, text="保存 SMTP 设置", command=self._save_smtp).grid(row=4, column=2, sticky="e", pady=(2, 0))
+        ttk.Button(smtp, text="保存 SMTP 配置", command=self._save_smtp).grid(row=4, column=2, sticky="e", pady=(2, 0))
 
         accounts = ttk.LabelFrame(frame, text="订阅账户", padding=10)
         accounts.grid(row=1, column=0, rowspan=2, sticky="nsew", padx=(0, 10))
@@ -150,7 +150,7 @@ class SubscriptionManager:
         self.time_var = tk.StringVar(value="18:00:00")
         ttk.Label(schedule, text="时间（24 时制）").grid(row=2, column=0, sticky="w", pady=4)
         ttk.Entry(schedule, textvariable=self.time_var, width=12).grid(row=2, column=1, sticky="w", pady=4)
-        ttk.Button(schedule, text="保存定时设置", command=self._save_schedule).grid(row=2, column=2, padx=(8, 0))
+        ttk.Button(schedule, text="保存定时配置", command=self._save_schedule).grid(row=2, column=2, padx=(8, 0))
         bottom = ttk.Frame(frame)
         bottom.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         ttk.Label(bottom, textvariable=self.status).pack(side="left")
@@ -371,7 +371,7 @@ class SubscriptionManager:
                     self.smtp_status.set("无网络连接 " + suffix)
                     self.smtp_status_label.configure(foreground="#B3261E")
                 elif result == "invalid":
-                    self.smtp_status.set("请填写完整 SMTP 设置 " + suffix)
+                    self.smtp_status.set("请填写完整 SMTP 配置 " + suffix)
                     self.smtp_status_label.configure(foreground="#B3261E")
                 else:
                     self.smtp_status.set("无法连接到 SMTP 服务器 " + suffix)
@@ -483,7 +483,7 @@ class SubscriptionManager:
             self.settings["schedule_enabled"] = enabled
             self.settings["schedule_time"] = normalized_time
             self.settings["schedule_notification_enabled"] = self.schedule_notification_enabled.get()
-            save_settings(self.settings); self.status.set("定时推送设置已保存")
+            save_settings(self.settings); self.status.set("定时推送配置已保存")
             show_windows_notification("已保存定时推送配置")
         except (OSError, ValueError) as error: messagebox.showerror("保存失败", str(error), parent=self.root)
 

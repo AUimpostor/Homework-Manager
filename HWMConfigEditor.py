@@ -548,7 +548,7 @@ class ConfigEditor:
             "<Button-1>",
             lambda _event: webbrowser.open("https://github.com/AUimpostor/Homework-Manager"),
         )
-        ttk.Label(about_title, text=" v1.6 Beta").pack(side="left")
+        ttk.Label(about_title, text=" v1.6 Beta 1").pack(side="left")
         row += 1
         ttk.Label(
             main,

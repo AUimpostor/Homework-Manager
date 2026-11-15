@@ -50,6 +50,7 @@ from HWMRuntime import (
 )
 from HWMSubscriptionService import maybe_send_scheduled
 from HWMAppIdentity import register_app
+from HomeworkEditor import refresh_scheduled_projects
 
 
 APPLICATION_DIR = (
@@ -103,6 +104,13 @@ def reset_homework_if_new_day():
                         elif isinstance(assignment, str):
                             assignments[index] = {"project": assignment, "hide": True}
         save_homework_data(homework_file, homework)
+        normalized = {}
+        for subject in homework:
+            if isinstance(subject, dict):
+                for name, assignments in subject.items():
+                    normalized[name] = assignments
+        refresh_scheduled_projects(normalized)
+        save_homework_data(homework_file, [{subject: assignments} for subject, assignments in normalized.items()])
         show_windows_notification("已重置所有科目的所有项目")
 
 
