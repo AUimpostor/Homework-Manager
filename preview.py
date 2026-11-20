@@ -21,8 +21,8 @@ import tkinter as tk
 from tkinter import ttk
 from pathlib import Path
 
-from HWMConfig import data_directory, load_config, load_homework_data
-from HWMRuntime import (
+from config import data_directory, load_config, load_assignment_data
+from runtime import (
     close_shutdown_event,
     configure_tk_scaling,
     create_shutdown_event,
@@ -41,7 +41,7 @@ APPLICATION_DIR = (
 )
 DATA_DIR = data_directory(APPLICATION_DIR)
 CONFIG_FILE = DATA_DIR / "config.json"
-HOMEWORK_FILE = DATA_DIR / "homework.json"
+ASSIGNMENT_FILE = DATA_DIR / "assignment.json"
 SUBJECT_NAMES = {
     "chinese": "语文", "maths": "数学", "english": "英语", "history": "历史",
     "politics": "政治", "physics": "物理", "chemistry": "化学", "biology": "生物",
@@ -50,7 +50,7 @@ SUBJECT_NAMES = {
 
 
 def visible_sections():
-    data = load_homework_data(HOMEWORK_FILE, CONFIG_FILE)
+    data = load_assignment_data(ASSIGNMENT_FILE, CONFIG_FILE)
     sections = []
     for item in data:
         if not isinstance(item, dict):
@@ -59,12 +59,12 @@ def visible_sections():
             visible = []
             for assignment in assignments if isinstance(assignments, list) else []:
                 if isinstance(assignment, str) and assignment.strip():
-                    visible.append({"project": assignment.strip()})
+                    visible.append({"assignment": assignment.strip()})
                 elif isinstance(assignment, dict) and not assignment.get("hide", False):
-                    text = assignment.get("project", "")
+                    text = assignment.get("assignment", "")
                     if isinstance(text, str) and text.strip():
                         visible.append({
-                            "project": text.strip(),
+                            "assignment": text.strip(),
                             "ignore_prefix": assignment.get("ignore_prefix", False) is True,
                             "ignore_suffix": assignment.get("ignore_suffix", False) is True,
                             "secondary": assignment.get("secondary", False) is True,
@@ -74,14 +74,14 @@ def visible_sections():
     return sections
 
 
-class ProjectPreview:
+class Assignmentpreview:
     def __init__(self, root):
         self.root = root
         self.config = load_config(CONFIG_FILE)
         self.sections = visible_sections()
-        self.shutdown_event = create_shutdown_event("project_preview")
+        self.shutdown_event = create_shutdown_event("assignment_preview")
         set_window_icon(root, __file__)
-        root.title("预览项目")
+        root.title("预览作业")
         configure_tk_scaling(root)
         set_window_size_percent(root, 20, 50)
         # Keep the native title bar's maximize/restore and close controls,
@@ -120,11 +120,11 @@ class ProjectPreview:
             preferred_theme = "vista" if sys.platform == "win32" else "clam"
             if preferred_theme in themes:
                 style.theme_use(preferred_theme)
-        alignment = "w" if self.config.get("project_alignment") == "靠左" else "e"
+        alignment = "w" if self.config.get("assignment_alignment") == "靠左" else "e"
         justify = "left" if alignment == "w" else "right"
         padx = max(1, round(float(self.config.get("content_padding_x_permill", 18)) / 1000 * self.root.winfo_screenwidth()))
         pady = max(1, round(float(self.config.get("content_padding_y_permill", 12)) / 1000 * self.root.winfo_screenheight()))
-        base_size = max(1, int(self.config.get("project_font_size", 17)))
+        base_size = max(1, int(self.config.get("assignment_font_size", 17)))
         content_frame = tk.Frame(self.root, background=background)
         preview = tk.Text(
             content_frame,
@@ -147,11 +147,11 @@ class ProjectPreview:
         )
         self.base_sizes = {
             "subject": base_size,
-            "project": base_size,
-            "secondary": max(1, int(self.config.get("secondary_project_font_size", 14))),
+            "assignment": base_size,
+            "secondary": max(1, int(self.config.get("secondary_assignment_font_size", 14))),
             "empty": base_size,
         }
-        self.preview_tags = {"subject": ("bold",), "project": (), "secondary": (), "empty": ()}
+        self.preview_tags = {"subject": ("bold",), "assignment": (), "secondary": (), "empty": ()}
         self.preview = preview
         self.justify = justify
         self.zoom_percent = 100
@@ -180,10 +180,10 @@ class ProjectPreview:
             for section_index, (name, assignments) in enumerate(self.sections):
                 preview.insert("end", name + "\n", "subject")
                 for assignment in assignments:
-                    prefix = "" if assignment.get("ignore_prefix", False) else self.config.get("project_prefix", "")
-                    suffix = "" if assignment.get("ignore_suffix", False) else self.config.get("project_suffix", "")
-                    text = "{}{}{}\n".format(prefix, assignment["project"], suffix)
-                    tag = "secondary" if assignment.get("secondary", False) else "project"
+                    prefix = "" if assignment.get("ignore_prefix", False) else self.config.get("assignment_prefix", "")
+                    suffix = "" if assignment.get("ignore_suffix", False) else self.config.get("assignment_suffix", "")
+                    text = "{}{}{}\n".format(prefix, assignment["assignment"], suffix)
+                    tag = "secondary" if assignment.get("secondary", False) else "assignment"
                     preview.insert("end", text, tag)
                 if section_index < len(self.sections) - 1:
                     preview.insert("end", "\n")
@@ -203,7 +203,7 @@ class ProjectPreview:
                 justify=self.justify,
             )
 
-        # Connect both scroll directions so long projects remain reachable at
+        # Connect both scroll directions so long assignments remain reachable at
         # high zoom levels.
         vertical_scrollbar = ttk.Scrollbar(
             content_frame, orient="vertical", command=preview.yview
@@ -236,7 +236,7 @@ class ProjectPreview:
 def main():
     enable_high_dpi()
     root = tk.Tk()
-    ProjectPreview(root)
+    Assignmentpreview(root)
     root.mainloop()
 
 

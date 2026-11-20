@@ -26,16 +26,16 @@ from pathlib import Path
 
 
 CONFIG_RELOAD_EVENTS = {
-    "display": "Local\\HomeworkDisplayConfigReload",
-    "config_editor": "Local\\HomeworkConfigEditorReload",
-    "homework_editor": "Local\\HomeworkProjectEditorReload",
+    "display": "Local\\displayconfigReload",
+    "config_editor": "Local\\dashboardReload",
+    "assignment_editor": "Local\\editorReload",
 }
 SHUTDOWN_EVENTS = {
-    "display": "Local\\HomeworkDisplayShutdown",
-    "config_editor": "Local\\HomeworkConfigEditorShutdown",
-    "homework_editor": "Local\\HomeworkProjectEditorShutdown",
-    "subscription_manager": "Local\\HomeworkSubscriptionManagerShutdown",
-    "project_preview": "Local\\HomeworkProjectPreviewShutdown",
+    "display": "Local\\displayShutdown",
+    "config_editor": "Local\\dashboardShutdown",
+    "assignment_editor": "Local\\editorShutdown",
+    "subscription_manager": "Local\\subscriptionManagerShutdown",
+    "assignment_preview": "Local\\previewShutdown",
 }
 
 _INSTANCE_MUTEX_HANDLES = []
@@ -46,9 +46,9 @@ def acquire_single_instance(component):
     if sys.platform != "win32":
         return True
     names = {
-        "dashboard": "Local\\HomeworkConfigEditorInstance",
-        "homework_editor": "Local\\HomeworkProjectEditorInstance",
-        "subscription_manager": "Local\\HomeworkSubscriptionManagerInstance",
+        "dashboard": "Local\\dashboardInstance",
+        "assignment_editor": "Local\\editorInstance",
+        "subscription_manager": "Local\\subscriptionManagerInstance",
     }
     if component not in names:
         raise ValueError("Unknown single-instance component: {}".format(component))
@@ -199,16 +199,16 @@ def place_window_bottom_right(window, margin_x=20, margin_y=20):
 
 def set_window_icon(window, module_file, default_only=True):
     if getattr(sys, "frozen", False):
-        icon_path = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent)) / "hwm.ico"
+        icon_path = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent)) / "icon.ico"
     else:
-        icon_path = Path(module_file).resolve().parent / "hwm.ico"
+        icon_path = Path(module_file).resolve().parent / "icon.ico"
     try:
         if icon_path.is_file():
             if default_only:
                 window.iconbitmap(default=str(icon_path))
             else:
                 window.iconbitmap(str(icon_path))
-    except (OSError, RuntimeError):
+    except (OSError, runtimeError):
         pass
 
 
@@ -273,13 +273,13 @@ def notify_config_saved():
             kernel32.CloseHandle(event)
 
 
-def show_windows_notification(message, title="Homework Manager"):
+def show_windows_notification(message, title="提醒"):
     """Show a native Windows toast without interrupting the save flow."""
     if sys.platform != "win32":
         return
     try:
         from winotify import Notification
-        from HWMAppIdentity import APP_ID
+        from appIdentity import APP_ID
 
         Notification(app_id=APP_ID, title=title, msg=message).show()
     except Exception:

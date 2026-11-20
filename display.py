@@ -22,7 +22,7 @@ import tkinter.font as tkfont
 import ctypes
 import threading
 from pathlib import Path
-from HWMRuntime import (
+from runtime import (
     close_config_reload_event,
     close_shutdown_event,
     configure_tk_scaling,
@@ -33,7 +33,7 @@ from HWMRuntime import (
 	wait_for_shutdown,
 	set_window_icon,
 )
-from HWMConfig import DEFAULT_CONFIG, data_directory, load_config, load_homework_data
+from config import DEFAULT_CONFIG, data_directory, load_config, load_assignment_data
 
 
 APPLICATION_DIR = (
@@ -44,7 +44,7 @@ APPLICATION_DIR = (
 RESOURCE_DIR = APPLICATION_DIR
 DATA_DIR = data_directory(RESOURCE_DIR)
 CONFIG_FILE = DATA_DIR / "config.json"
-HOMEWORK_FILE = DATA_DIR / "homework.json"
+ASSIGNMENT_FILE = DATA_DIR / "assignment.json"
 SUBJECT_NAMES = {
 	"chinese": "语文",
 	"maths": "数学",
@@ -73,7 +73,7 @@ def acquire_single_instance():
 	kernel32.GetLastError.restype = ctypes.c_ulong
 	kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
 
-	mutex = kernel32.CreateMutexW(None, False, "Local\\HomeworkDisplaySingleInstance")
+	mutex = kernel32.CreateMutexW(None, False, "Local\\displaySingleInstance")
 	if not mutex:
 		return True
 	if kernel32.GetLastError() == 183:
@@ -83,29 +83,29 @@ def acquire_single_instance():
 	return mutex
 
 
-def format_homework(work_list):
+def format_assignment(work_list):
 	sections = []
 	for subject_work in work_list:
 		if not isinstance(subject_work, dict):
-			raise ValueError("homework.json 中的每个科目必须是 JSON 对象")
+			raise ValueError("assignment.json 中的每个科目必须是 JSON 对象")
 
-		for subject, homework in subject_work.items():
-			if not isinstance(homework, list):
+		for subject, entries in subject_work.items():
+			if not isinstance(entries, list):
 				raise ValueError("科目作业必须是 JSON 数组")
 
 			assignments = []
-			for assignment in homework:
+			for assignment in entries:
 				if isinstance(assignment, str) and assignment.strip():
-					assignments.append({"project": assignment.strip()})
+					assignments.append({"assignment": assignment.strip()})
 				elif isinstance(assignment, dict):
-					text = assignment.get("project")
+					text = assignment.get("assignment")
 					if (
 						isinstance(text, str)
 						and text.strip()
 						and assignment.get("hide", False) is not True
 					):
 						assignments.append({
-							"project": text.strip(),
+							"assignment": text.strip(),
 							"ignore_prefix": assignment.get("ignore_prefix", False) is True,
 							"ignore_suffix": assignment.get("ignore_suffix", False) is True,
 							"secondary": assignment.get("secondary", False) is True,
@@ -119,10 +119,10 @@ def format_homework(work_list):
 
 def load_document():
 	config = load_config(CONFIG_FILE)
-	data = load_homework_data(HOMEWORK_FILE, CONFIG_FILE)
+	data = load_assignment_data(ASSIGNMENT_FILE, CONFIG_FILE)
 
 	for key in (
-		"title_width_permill", "title_length_permill", "title_font_size", "project_font_size", "secondary_project_font_size",
+		"title_width_permill", "title_length_permill", "title_font_size", "assignment_font_size", "secondary_assignment_font_size",
 		"title_guide_line_width_permill",
 		"display_range_left_percent", "display_range_right_percent", "display_range_top_percent",
 		"display_range_bottom_percent", "content_padding_x_permill", "content_padding_y_permill",
@@ -157,17 +157,17 @@ def load_document():
 	config["window_alpha"] = min(1.0, max(0.1, float(config.get("window_alpha", DEFAULT_CONFIG["window_alpha"]))))
 	config["scroll_step_size"] = min(1.0, max(0.0001, config["scroll_step_size"]))
 	config["fade_step"] = min(1.0, max(0.01, config["fade_step"]))
-	for key in ("project_prefix", "project_suffix"):
+	for key in ("assignment_prefix", "assignment_suffix"):
 		if not isinstance(config.get(key), str):
 			config[key] = DEFAULT_CONFIG[key]
-	for key in ("title_alignment", "project_alignment"):
+	for key in ("title_alignment", "assignment_alignment"):
 		if config.get(key) not in ("靠左", "靠右"):
 			config[key] = DEFAULT_CONFIG[key]
-	for key in ("title_font_color", "project_font_color", "secondary_project_font_color", "title_primary_color", "title_secondary_color"):
+	for key in ("title_font_color", "assignment_font_color", "secondary_assignment_font_color", "title_primary_color", "title_secondary_color"):
 		if not isinstance(config.get(key), str) or not config[key].strip():
 			config[key] = DEFAULT_CONFIG[key]
 
-	return config, format_homework(data)
+	return config, format_assignment(data)
 
 
 def main():
@@ -251,7 +251,7 @@ def main():
 			pady=permill_y(config["content_padding_y_permill"]),
 		)
 
-	def render_homework():
+	def render_assignment():
 		nonlocal config
 		config, sections = load_document()
 		apply_window_config()
@@ -268,10 +268,10 @@ def main():
 			header_text = "{}".format(subject_name)
 			header_height = permill_y(config["title_length_permill"])
 			main_width = permill_x(config["title_width_permill"])
-			theme = config.get("title_theme", "默认")
+			theme = config.get("title_theme", "basic_color_block")
 			guide_line_width = permill_x(config.get("title_guide_line_width_permill", 10))
-			secondary_width = guide_line_width if theme == "默认" else 0
-			canvas_width = main_width + secondary_width if theme == "默认" else main_width
+			secondary_width = guide_line_width
+			canvas_width = main_width + secondary_width
 			header = tk.Canvas(
 				section,
 				width=canvas_width + 5,
@@ -296,39 +296,10 @@ def main():
 					return color
 			primary_outline = outline_color(primary)
 			secondary_outline = outline_color(secondary)
-			if theme == "默认":
-				header.create_rectangle(0, 0, main_width, header_height, fill=primary, outline=primary_outline)
-				header.create_rectangle(main_width, 0, main_width + secondary_width, header_height, fill=secondary, outline=secondary_outline)
-			elif theme == "圆角标签":
-				radius = min(12, header_height // 3, main_width // 8)
-				header.create_polygon(
-					radius, 0, main_width-radius, 0, main_width, radius,
-					main_width, header_height-radius, main_width-radius, header_height,
-					radius, header_height, 0, header_height-radius, 0, radius,
-					fill=primary, outline=primary_outline, smooth=True, splinesteps=12,
-				)
-				dot = max(4, min(12, header_height // 4))
-				header.create_oval(10, (header_height-dot)//2, 10+dot, (header_height+dot)//2, fill=secondary, outline=secondary_outline)
-			elif theme == "左侧标记":
-				mark = max(1, min(header_height, guide_line_width))
-				header.create_rectangle(0, 0, main_width, header_height, fill=primary, outline=primary_outline)
-				header.create_rectangle(0, 0, mark, header_height, fill=secondary, outline=secondary_outline)
-			elif theme == "底边强调":
-				bar = max(1, min(header_height, guide_line_width))
-				header.create_rectangle(0, 0, main_width, header_height, fill=primary, outline=primary_outline)
-				header.create_rectangle(0, header_height-bar, main_width, header_height, fill=secondary, outline=secondary_outline)
-			elif theme == "顶面强调":
-				bar = max(1, min(header_height, guide_line_width))
-				header.create_rectangle(0, 0, main_width, header_height, fill=primary, outline=primary_outline)
-				header.create_rectangle(0, 0, main_width, bar, fill=secondary, outline=secondary_outline)
-			elif theme == "角标标题":
-				cut = min(18, header_height // 3, main_width // 6)
-				header.create_rectangle(0, 0, main_width, header_height, fill=primary, outline=primary_outline)
-				header.create_polygon(main_width-cut, 0, main_width, 0, main_width, cut, fill=secondary, outline=secondary_outline)
-			else:
-				header.create_rectangle(0, 0, main_width, header_height, fill=primary, outline=primary_outline)
+			header.create_rectangle(0, 0, main_width, header_height, fill=primary, outline=primary_outline)
+			header.create_rectangle(main_width, 0, main_width + secondary_width, header_height, fill=secondary, outline=secondary_outline)
 			title_is_left = config["title_alignment"] == "靠左"
-			project_is_left = config["project_alignment"] == "靠左"
+			assignment_is_left = config["assignment_alignment"] == "靠左"
 			header.create_text(
 				10 if title_is_left else main_width - 10,
 				header_height // 2,
@@ -341,22 +312,22 @@ def main():
 
 			for assignment in assignments:
 				is_secondary = assignment.get("secondary", False)
-				homework = tk.Label(
+				label = tk.Label(
 					section,
 					text="{}{}{}".format(
-						"" if assignment.get("ignore_prefix", False) else config["project_prefix"],
-						assignment["project"],
-						"" if assignment.get("ignore_suffix", False) else config["project_suffix"],
+						"" if assignment.get("ignore_prefix", False) else config["assignment_prefix"],
+						assignment["assignment"],
+						"" if assignment.get("ignore_suffix", False) else config["assignment_suffix"],
 					),
-					anchor="w" if project_is_left else "e",
-					justify="left" if project_is_left else "right",
-					font=("Microsoft YaHei UI", config["secondary_project_font_size"] if is_secondary else config["project_font_size"]),
-					foreground=config["secondary_project_font_color"] if is_secondary else config["project_font_color"],
+					anchor="w" if assignment_is_left else "e",
+					justify="left" if assignment_is_left else "right",
+					font=("Microsoft YaHei UI", config["secondary_assignment_font_size"] if is_secondary else config["assignment_font_size"]),
+					foreground=config["secondary_assignment_font_color"] if is_secondary else config["assignment_font_color"],
 					background=transparent_color,
 				)
-				homework.pack(anchor="w" if project_is_left else "e", pady=(4, 0))
+				label.pack(anchor="w" if assignment_is_left else "e", pady=(4, 0))
 
-	render_homework()
+	render_assignment()
 	animation_generation = 0
 	animation_after_ids = []
 
@@ -451,11 +422,11 @@ def main():
 	root.bind_all("<KeyPress-Up>", manual_scroll, add="+")
 	root.bind_all("<KeyPress-Down>", manual_scroll, add="+")
 
-	def reload_homework():
+	def reload_assignment():
 		nonlocal animation_generation
 		try:
 			cancel_animation_jobs()
-			render_homework()
+			render_assignment()
 			animation_generation += 1
 			root.attributes("-alpha", max_alpha)
 			scroll_canvas.yview_moveto(0)
@@ -468,7 +439,7 @@ def main():
 
 	def wait_for_reload():
 		if wait_for_config_reload(reload_event):
-			root.after(0, reload_homework)
+			root.after(0, reload_assignment)
 			threading.Thread(target=wait_for_reload, daemon=True).start()
 
 	if reload_event is not None:

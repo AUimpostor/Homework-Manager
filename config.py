@@ -25,24 +25,25 @@ DEFAULT_CONFIG = {
     "title_width_permill": 45,
     "title_length_permill": 45,
     "title_font_size": 18,
-    "project_font_size": 17,
-    "secondary_project_font_size": 14,
+    "assignment_font_size": 17,
+    "secondary_assignment_font_size": 14,
     "title_font_color": "#F5F5F5",
-    "project_font_color": "#F5F5F5",
-    "secondary_project_font_color": "#A9A9A9",
+    "assignment_font_color": "#F5F5F5",
+    "secondary_assignment_font_color": "#A9A9A9",
     "title_alignment": "靠右",
-    "project_alignment": "靠右",
-    "title_theme": "默认",
+    "assignment_alignment": "靠右",
+    "title_theme": "basic_color_block",
     "title_primary_color": "#315E7D",
     "title_secondary_color": "#4C8DB4",
     "title_outline_opacity": 80,
     "title_guide_line_width_permill": 10,
     "auto_start_display": False,
     "tray_click_action": "dashboard",
+    "open_action": "dashboard",
     "school": "",
     "class": "",
-    "project_prefix": "",
-    "project_suffix": " -",
+    "assignment_prefix": "",
+    "assignment_suffix": " -",
     "dashboard_width_percent": 40,
     "dashboard_height_percent": 40,
     "editor_width_percent": 50,
@@ -53,13 +54,13 @@ DEFAULT_CONFIG = {
     "display_range_left_percent": 55,
     "display_range_right_percent": 100,
     "display_range_top_percent": 2,
-    "display_range_bottom_percent": 70,
+    "display_range_bottom_percent": 45,
     "window_alpha": 0.9,
     "content_padding_x_permill": 18,
     "content_padding_y_permill": 12,
     "section_spacing_permill": 12,
     "scroll_start_delay": 1200,
-    "scroll_step_interval": 120,
+    "scroll_step_interval": 30,
     "scroll_step_size": 0.001,
     "scroll_end_pause": 1200,
     "restart_pause": 1200,
@@ -86,13 +87,18 @@ DEFAULT_SUBJECTS = (
 
 
 def data_directory(application_dir):
-    """Return the data directory, moving existing root-level user files once."""
+    """Return the data directory without creating files or directories."""
+    return Path(application_dir) / "data"
+
+
+def initialize_data_directory(application_dir):
+    """Create the data directories and move existing root-level user files once."""
     application_dir = Path(application_dir)
-    data_dir = application_dir / "data"
+    data_dir = data_directory(application_dir)
     backup_dir = data_dir / "backup"
     data_dir.mkdir(parents=True, exist_ok=True)
     backup_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("config.json", "homework.json", "subscriptions.json"):
+    for name in ("config.json", "assignment.json", "subscriptions.json"):
         source = application_dir / name
         destination = data_dir / name
         if source.is_file() and not destination.exists():
@@ -132,7 +138,7 @@ def load_config_document(config_file):
         data = []
         legacy_font_color = None
         has_title_font_color = False
-        has_project_font_color = False
+        has_assignment_font_color = False
         legacy_array = isinstance(document, list)
         items = document if legacy_array else [document]
         for item in items:
@@ -173,14 +179,14 @@ def load_config_document(config_file):
                     config.pop(obsolete_key, None)
                 legacy_font_color = config_item.get("font_color", legacy_font_color)
                 has_title_font_color |= "title_font_color" in config_item
-                has_project_font_color |= "project_font_color" in config_item
+                has_assignment_font_color |= "assignment_font_color" in config_item
             if isinstance(item.get("data"), list):
                 data.extend(item["data"])
         if legacy_font_color is not None:
             if not has_title_font_color:
                 config["title_font_color"] = legacy_font_color
-            if not has_project_font_color:
-                config["project_font_color"] = legacy_font_color
+            if not has_assignment_font_color:
+                config["assignment_font_color"] = legacy_font_color
         return config, data
     except FileNotFoundError:
         return DEFAULT_CONFIG.copy(), default_document()[1]["data"]
@@ -204,18 +210,24 @@ def save_config(config_file, config):
     temporary.replace(path)
 
 
-def load_homework_data(homework_file, legacy_config_file=None):
-    homework_path = Path(homework_file)
+def load_assignment_data(assignment_file, legacy_config_file=None):
+    assignment_path = Path(assignment_file)
     try:
-        with homework_path.open("r", encoding="utf-8") as source:
+        with assignment_path.open("r", encoding="utf-8") as source:
             data = json.load(source)
         if isinstance(data, dict):
             return [{subject: assignments} for subject, assignments in data.items()]
         if isinstance(data, list):
             return data
-        raise ValueError("homework.json 必须是 JSON 对象")
+        raise ValueError("assignment.json 必须是 JSON 对象")
     except FileNotFoundError:
-        pass
+        try:
+            from runtime import show_windows_notification
+            show_windows_notification(
+                "活跃的作业文件意外丢失\n已将作业文件重置为空", "加载作业时出现错误"
+            )
+        except Exception:
+            pass
 
     data = None
     migrated_legacy_data = False
@@ -233,14 +245,14 @@ def load_homework_data(homework_file, legacy_config_file=None):
             data = None
     if data is None:
         data = default_document()[1]["data"]
-    save_homework_data(homework_path, data)
+    save_assignment_data(assignment_path, data)
     if migrated_legacy_data:
         save_config(legacy_config_file, load_config(legacy_config_file))
     return data
 
 
-def save_homework_data(homework_file, data):
-    path = Path(homework_file)
+def save_assignment_data(assignment_file, data):
+    path = Path(assignment_file)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".{}.tmp".format(uuid.uuid4().hex))
     if isinstance(data, list):

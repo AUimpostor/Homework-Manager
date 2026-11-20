@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from PIL import Image, ImageTk
 from tkinter import colorchooser, messagebox, ttk
-from HWMRuntime import (
+from runtime import (
     close_config_reload_event,
     close_shutdown_event,
     configure_tk_scaling,
@@ -46,8 +46,7 @@ from HWMRuntime import (
     wait_for_shutdown,
     set_window_icon,
 )
-from HWMConfig import DEFAULT_CONFIG, data_directory, load_config, load_homework_data, save_config
-from HWMAppIdentity import uninstall
+from config import DEFAULT_CONFIG, data_directory, load_config, load_assignment_data, save_config
 
 
 APPLICATION_DIR = (
@@ -59,7 +58,7 @@ RESOURCE_DIR = APPLICATION_DIR
 DATA_DIR = data_directory(RESOURCE_DIR)
 BACKUP_DIR = DATA_DIR / "backup"
 CONFIG_FILE = DATA_DIR / "config.json"
-HOMEWORK_FILE = DATA_DIR / "homework.json"
+ASSIGNMENT_FILE = DATA_DIR / "assignment.json"
 LICENSE_BUNDLE_DIR = (
     Path(getattr(sys, "_MEIPASS", APPLICATION_DIR)) / "distribution-licenses"
     if getattr(sys, "frozen", False)
@@ -68,10 +67,10 @@ LICENSE_BUNDLE_DIR = (
 EDITOR_FILE = (
     APPLICATION_DIR / "Homework Manager.exe"
     if getattr(sys, "frozen", False)
-    else APPLICATION_DIR / "HomeworkEditor.py"
+    else APPLICATION_DIR / "editor.py"
 )
 INTEGER_FIELDS = (
-    "title_width_permill", "title_length_permill", "title_font_size", "project_font_size", "secondary_project_font_size",
+    "title_width_permill", "title_length_permill", "title_font_size", "assignment_font_size", "secondary_assignment_font_size",
     "title_guide_line_width_permill",
     "title_outline_opacity",
     "editor_width_percent", "editor_height_percent",
@@ -84,52 +83,53 @@ FLOAT_FIELDS = ("window_alpha", "scroll_step_size", "fade_step")
 BOOLEAN_FIELDS = ("auto_start_display",)
 TRAY_CLICK_OPTIONS = {
     "dashboard": "仪表盘",
-    "homework_editor": "项目编辑器",
+    "assignment_editor": "作业编辑器",
     "menu": "右键菜单",
 }
-SELECT_FIELDS = ("tray_click_action", "title_theme", "title_alignment", "project_alignment")
+SELECT_FIELDS = ("tray_click_action", "open_action", "title_theme", "title_alignment", "assignment_alignment")
 TITLE_THEMES = {
-    "默认": "默认",
-    "圆角标签": "圆角标签",
-    "左侧标记": "左侧标记",
-    "底边强调": "底边强调",
-    "顶面强调": "顶面强调",
-    "角标标题": "角标标题",
+    "basic_color_block": "基础色块（默认）",
+}
+OPEN_ACTION_OPTIONS = {
+    "dashboard": "仪表盘",
+    "assignment_editor": "作业编辑器",
 }
 SELECT_OPTIONS = {
     "tray_click_action": TRAY_CLICK_OPTIONS,
-    "title_theme": {name: name for name in TITLE_THEMES},
+    "open_action": OPEN_ACTION_OPTIONS,
+    "title_theme": TITLE_THEMES,
     "title_alignment": {"靠左": "靠左", "靠右": "靠右"},
-    "project_alignment": {"靠左": "靠左", "靠右": "靠右"},
+    "assignment_alignment": {"靠左": "靠左", "靠右": "靠右"},
 }
 COLOR_FIELDS = (
-    "title_font_color", "project_font_color", "secondary_project_font_color", "title_primary_color",
+    "title_font_color", "assignment_font_color", "secondary_assignment_font_color", "title_primary_color",
     "title_secondary_color",
 )
 FIELD_LABELS = {
     "title_width_permill": "标题宽度（‰）",
     "title_length_permill": "标题高度（‰）",
     "title_font_size": "标题字号（size）",
-    "project_font_size": "项目字号（size）",
-    "secondary_project_font_size": "次要项目字号（size）",
+    "assignment_font_size": "作业字号（size）",
+    "secondary_assignment_font_size": "次要作业字号（size）",
     "title_font_color": "标题字体颜色",
-    "project_font_color": "项目字体颜色",
-    "secondary_project_font_color": "次要项目字体颜色",
+    "assignment_font_color": "作业字体颜色",
+    "secondary_assignment_font_color": "次要作业字体颜色",
     "title_theme": "标题主题",
     "title_alignment": "标题排版",
-    "project_alignment": "项目排版",
+    "assignment_alignment": "作业排版",
     "title_primary_color": "标题主要颜色",
     "title_secondary_color": "标题次要颜色",
     "title_outline_opacity": "描边透明度（%）",
     "title_guide_line_width_permill": "标题引导线粗（‰）",
     "auto_start_display": "随 Windows 启动",
     "tray_click_action": "点击系统托盘图标时",
+    "open_action": "打开 Homework Manager 时",
     "school": "学校",
     "class": "班级",
-    "project_prefix": "项目前缀",
-    "project_suffix": "项目后缀",
-    "editor_width_percent": "项目编辑器宽度（%）",
-    "editor_height_percent": "项目编辑器高度（%）",
+    "assignment_prefix": "作业前缀",
+    "assignment_suffix": "作业后缀",
+    "editor_width_percent": "作业编辑器宽度（%）",
+    "editor_height_percent": "作业编辑器高度（%）",
     "display_range_left_percent": "显示区域：左（%）",
     "display_range_right_percent": "显示区域：右（%）",
     "display_range_top_percent": "显示区域：上（%）",
@@ -162,7 +162,7 @@ CONFIG_GROUPS = (
     (
         "首选项",
         (
-            ("", ("auto_start_display", "tray_click_action")),
+            ("", ("auto_start_display", "open_action", "tray_click_action")),
             ("信息", ("school", "class")),
         ),
     ),
@@ -185,20 +185,20 @@ CONFIG_GROUPS = (
                 ),
             ),
             (
-                "项目",
+                "作业",
                 (
-                    "project_alignment",
-                    "project_font_size",
-                    "project_font_color",
-                    "project_prefix",
-                    "project_suffix",
+                    "assignment_alignment",
+                    "assignment_font_size",
+                    "assignment_font_color",
+                    "assignment_prefix",
+                    "assignment_suffix",
                 ),
             ),
             (
-                "次要项目",
+                "次要作业",
                 (
-                    "secondary_project_font_size",
-                    "secondary_project_font_color",
+                    "secondary_assignment_font_size",
+                    "secondary_assignment_font_color",
                 ),
             ),
         ),
@@ -253,7 +253,7 @@ STARTUP_VALUE_NAME = "main"
 def load_document():
     ensure_config_file_visible()
     config = load_config(CONFIG_FILE)
-    data = load_homework_data(HOMEWORK_FILE, CONFIG_FILE)
+    data = load_assignment_data(ASSIGNMENT_FILE, CONFIG_FILE)
     return config, data
 
 
@@ -295,12 +295,12 @@ def list_config_backups():
 def get_display_startup_command():
     if getattr(sys, "frozen", False):
         main_file = APPLICATION_DIR / "Homework Manager.exe"
-        return subprocess.list2cmdline([str(main_file)])
+        return subprocess.list2cmdline([str(main_file), "--autostart"])
     main_file = APPLICATION_DIR / "main.py"
     python_executable = Path(sys.executable).with_name("pythonw.exe")
     if not python_executable.exists():
         python_executable = Path(sys.executable)
-    return subprocess.list2cmdline([str(python_executable), str(main_file)])
+    return subprocess.list2cmdline([str(python_executable), str(main_file), "--autostart"])
 
 
 def update_display_startup(enabled):
@@ -327,7 +327,7 @@ def update_display_startup(enabled):
                 pass
 
 
-class ConfigEditor:
+class configeditor:
     def __init__(self, root):
         self.root = root
         enable_touch_keyboard(root)
@@ -343,11 +343,14 @@ class ConfigEditor:
         )
         self.variables = {}
         self.preview_menu = tk.Menu(self.root, tearoff=False)
-        self.preview_menu.add_command(label="预览项目", command=self.open_project_preview)
+        self.preview_menu.add_command(label="预览作业", command=self.open_assignment_preview)
         self.color_previews = {}
         self.color_selectors = {}
         self.guide_width_widgets = []
         self.status = tk.StringVar(value="就绪")
+        self._dirty = False
+        self._loading = False
+        self.save_button = None
         self.create_widgets()
         self.load_values()
         self.reload_event = create_config_reload_event("config_editor")
@@ -423,7 +426,7 @@ class ConfigEditor:
         self.root.bind_all("<Button-4>", on_mousewheel)
         self.root.bind_all("<Button-5>", on_mousewheel)
 
-        # The dashboard has no homework list; expose the project preview from
+        # The dashboard has no assignment list; expose the assignment preview from
         # its right-click menu while keeping the existing preview button.
         self.root.bind("<Button-3>", self.show_preview_menu)
         self.root.bind("<Button-2>", self.show_preview_menu)
@@ -464,6 +467,7 @@ class ConfigEditor:
                         row=row, column=0, sticky="w", padx=(0, 14), pady=5
                     )
                     variable = tk.StringVar()
+                    variable.trace_add("write", lambda *_args: self._mark_dirty())
                     self.variables[key] = variable
                     label_widget = None
                     if key in BOOLEAN_FIELDS:
@@ -529,7 +533,7 @@ class ConfigEditor:
         row += 1
         about_title = ttk.Frame(main)
         about_title.grid(row=row, column=0, columnspan=2, sticky="w", pady=2)
-        icon_path = Path(getattr(sys, "_MEIPASS", RESOURCE_DIR)) / "hwm.ico"
+        icon_path = Path(getattr(sys, "_MEIPASS", RESOURCE_DIR)) / "icon.ico"
         with Image.open(icon_path) as icon_file:
             icon_file.seek(0)
             icon_image = icon_file.convert("RGBA")
@@ -548,7 +552,7 @@ class ConfigEditor:
             "<Button-1>",
             lambda _event: webbrowser.open("https://github.com/AUimpostor/Homework-Manager"),
         )
-        ttk.Label(about_title, text=" v1.6 Beta 1").pack(side="left")
+        ttk.Label(about_title, text=" v1.6 Beta 2").pack(side="left")
         row += 1
         ttk.Label(
             main,
@@ -596,11 +600,6 @@ class ConfigEditor:
             text="备份管理",
             command=self.rollback_config,
         ).pack(side="left", padx=4)
-        ttk.Button(
-            recovery_buttons,
-            text="卸载",
-            command=self.uninstall_application,
-        ).pack(side="left", padx=4)
 
         bottom = ttk.Frame(outer)
         bottom.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -617,6 +616,8 @@ class ConfigEditor:
             text="保存配置",
             command=self.save,
         ).pack(side="left", padx=4)
+        self.save_button = buttons.winfo_children()[0]
+        self.save_button.configure(state="disabled")
         ttk.Button(
             buttons,
             text="推送管理器...",
@@ -624,13 +625,13 @@ class ConfigEditor:
         ).pack(side="left", padx=4)
         ttk.Button(
             buttons,
-            text="预览项目",
-            command=self.open_project_preview,
+            text="预览作业",
+            command=self.open_assignment_preview,
         ).pack(side="left", padx=4)
         ttk.Button(
             buttons,
-            text="项目编辑器...",
-            command=self.open_homework_editor,
+            text="作业编辑器...",
+            command=self.open_assignment_editor,
         ).pack(side="left", padx=4)
 
         control_buttons = ttk.Frame(outer)
@@ -656,24 +657,6 @@ class ConfigEditor:
         except OSError as error:
             messagebox.showerror("无法打开", str(error), parent=self.root)
 
-    def uninstall_application(self):
-        if not messagebox.askyesno("确认卸载", "将移除 Homework Manager。继续选择卸载方式？", parent=self.root):
-            return
-        choice = messagebox.askquestion(
-            "选择卸载方式",
-            "选择“是”：卸载程序（移除程序、程序数据、开始菜单快捷方式和注册信息）。\n\n选择“否”：调试性卸载（移除程序数据、开始菜单快捷方式和注册信息，保留程序文件）。",
-            type=messagebox.YESNOCANCEL,
-            parent=self.root,
-        )
-        if choice == "cancel":
-            return
-        remove_program = choice == "yes"
-        try:
-            uninstall(remove_program)
-            self.root.destroy()
-        except OSError as error:
-            messagebox.showerror("卸载失败", str(error), parent=self.root)
-
     def open_license_folder(self):
         if not LICENSE_BUNDLE_DIR.is_dir():
             messagebox.showerror("无法打开", "找不到内嵌许可文件目录。", parent=self.root)
@@ -690,16 +673,23 @@ class ConfigEditor:
         request_main_action("restart")
 
     def load_values(self):
-        for key in DEFAULT_CONFIG:
-            if key not in self.variables:
-                continue
-            value = self.config.get(key, DEFAULT_CONFIG[key])
-            if key in SELECT_FIELDS:
-                value = SELECT_OPTIONS[key].get(value, SELECT_OPTIONS[key][DEFAULT_CONFIG[key]])
-            self.variables[key].set(str(value))
-        for key in COLOR_FIELDS:
-            self.update_color_preview(key)
-        self.update_guide_width_visibility()
+        self._loading = True
+        try:
+            for key in DEFAULT_CONFIG:
+                if key not in self.variables:
+                    continue
+                value = self.config.get(key, DEFAULT_CONFIG[key])
+                if key in SELECT_FIELDS:
+                    value = SELECT_OPTIONS[key].get(value, SELECT_OPTIONS[key][DEFAULT_CONFIG[key]])
+                self.variables[key].set(str(value))
+            for key in COLOR_FIELDS:
+                self.update_color_preview(key)
+            self.update_guide_width_visibility()
+        finally:
+            self._loading = False
+        self._dirty = False
+        if self.save_button is not None:
+            self.save_button.configure(state="disabled")
 
     def apply_title_theme(self, _event=None):
         self.update_guide_width_visibility()
@@ -708,9 +698,12 @@ class ConfigEditor:
         if not self.guide_width_widgets:
             return
         label, entry = self.guide_width_widgets
-        if self.variables["title_theme"].get() in (
-            "默认", "左侧标记", "底边强调", "顶面强调"
-        ):
+        selected_label = self.variables["title_theme"].get()
+        selected_value = next(
+            (value for value, label in SELECT_OPTIONS["title_theme"].items() if label == selected_label),
+            DEFAULT_CONFIG["title_theme"],
+        )
+        if selected_value == "basic_color_block":
             label.grid()
             entry.grid()
         else:
@@ -798,7 +791,7 @@ class ConfigEditor:
             raise ValueError("每次滚动幅度必须大于 0 且不超过 1")
         if not 0 < config["fade_step"] <= 1:
             raise ValueError("淡入淡出步长必须大于 0 且不超过 1")
-        for key in ("project_prefix", "project_suffix", "school", "class"):
+        for key in ("assignment_prefix", "assignment_suffix", "school", "class"):
             config[key] = self.variables[key].get()
         for key in COLOR_FIELDS:
             color = self.variables[key].get().strip()
@@ -811,7 +804,18 @@ class ConfigEditor:
             config[key] = color
         return config
 
+    def _mark_dirty(self):
+        if self._loading:
+            return
+        if self._dirty:
+            return
+        self._dirty = True
+        if self.save_button is not None:
+            self.save_button.configure(state="normal")
+
     def save(self):
+        if not self._dirty:
+            return
         try:
             config = self.read_config()
             save_document(config)
@@ -820,9 +824,12 @@ class ConfigEditor:
             messagebox.showerror("保存失败", str(error), parent=self.root)
             return
         self.config = config
+        self._dirty = False
+        if self.save_button is not None:
+            self.save_button.configure(state="disabled")
         self.status.set("已保存到 config.json")
         notify_config_saved()
-        show_windows_notification("已保存 Homework Manager 配置")
+        show_windows_notification("已保存 Homework Manager 配置", "保存完成")
         self.root.after_idle(self.reload_from_disk)
 
     def restore_default_config(self):
@@ -891,7 +898,7 @@ class ConfigEditor:
                 create_config_backup(".json.bak")
                 shutil.copy2(backup, CONFIG_FILE)
                 self.config = restored_config
-                self.data = load_homework_data(HOMEWORK_FILE, CONFIG_FILE)
+                self.data = load_assignment_data(ASSIGNMENT_FILE, CONFIG_FILE)
                 self.load_values()
                 update_display_startup(self.config["auto_start_display"])
             except (OSError, TypeError, ValueError, json.JSONDecodeError, winreg.error) as error:
@@ -951,12 +958,12 @@ class ConfigEditor:
         dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
         place_window_bottom_right(dialog)
 
-    def open_homework_editor(self):
+    def open_assignment_editor(self):
         try:
             if EDITOR_FILE.suffix == ".py":
                 subprocess.Popen([sys.executable, str(EDITOR_FILE)])
             else:
-                subprocess.Popen([str(EDITOR_FILE), "--component", "homework_editor"])
+                subprocess.Popen([str(EDITOR_FILE), "--component", "assignment_editor"])
         except OSError as error:
             messagebox.showerror("启动失败", str(error), parent=self.root)
 
@@ -965,16 +972,16 @@ class ConfigEditor:
             if getattr(sys, "frozen", False):
                 subprocess.Popen([str(EDITOR_FILE), "--component", "subscription_manager"])
             else:
-                subprocess.Popen([sys.executable, str(APPLICATION_DIR / "HWMSubscriptionManager.py")])
+                subprocess.Popen([sys.executable, str(APPLICATION_DIR / "subscriptionManager.py")])
         except OSError as error:
             messagebox.showerror("启动失败", str(error), parent=self.root)
 
-    def open_project_preview(self):
+    def open_assignment_preview(self):
         try:
             if getattr(sys, "frozen", False):
-                subprocess.Popen([str(EDITOR_FILE), "--component", "project_preview"])
+                subprocess.Popen([str(EDITOR_FILE), "--component", "assignment_preview"])
             else:
-                subprocess.Popen([sys.executable, str(APPLICATION_DIR / "HWMProjectPreview.py")])
+                subprocess.Popen([sys.executable, str(APPLICATION_DIR / "preview.py")])
         except OSError as error:
             messagebox.showerror("启动失败", str(error), parent=self.root)
 
@@ -991,12 +998,12 @@ class ConfigEditor:
 
 def main():
     enable_high_dpi()
-    from HWMRuntime import acquire_single_instance
+    from runtime import acquire_single_instance
     if not acquire_single_instance("dashboard"):
         return
     root = tk.Tk()
     try:
-        ConfigEditor(root)
+        configeditor(root)
         place_window_bottom_right(root)
     except (OSError, json.JSONDecodeError, ValueError) as error:
         messagebox.showerror("加载失败", str(error), parent=root)

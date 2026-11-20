@@ -25,7 +25,7 @@ from datetime import datetime
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
-from HWMRuntime import (
+from runtime import (
     close_config_reload_event,
     close_shutdown_event,
     configure_tk_scaling,
@@ -41,7 +41,7 @@ from HWMRuntime import (
     wait_for_shutdown,
     set_window_icon,
 )
-from HWMConfig import data_directory, load_config, load_homework_data, save_config, save_homework_data
+from config import data_directory, load_config, load_assignment_data, save_config, save_assignment_data
 
 
 APPLICATION_DIR = (
@@ -52,7 +52,7 @@ APPLICATION_DIR = (
 RESOURCE_DIR = APPLICATION_DIR
 DATA_DIR = data_directory(RESOURCE_DIR)
 CONFIG_FILE = DATA_DIR / "config.json"
-HOMEWORK_FILE = DATA_DIR / "homework.json"
+ASSIGNMENT_FILE = DATA_DIR / "assignment.json"
 SUBJECT_NAMES = {
     "chinese": "语文",
     "maths": "数学",
@@ -96,16 +96,16 @@ def scheduled_today(rules, today=None):
     return False
 
 
-def refresh_scheduled_projects(homework):
-    for assignments in homework.values():
+def refresh_scheduled_assignments(entries):
+    for assignments in entries.values():
         for assignment in assignments:
             if assignment.get("schedule_rules"):
                 assignment["hide"] = not scheduled_today(assignment["schedule_rules"])
 
-def load_homework():
-    homework = {}
+def load_assignment():
+    entries = {}
     config = load_config(CONFIG_FILE)
-    data = load_homework_data(HOMEWORK_FILE, CONFIG_FILE)
+    data = load_assignment_data(ASSIGNMENT_FILE, CONFIG_FILE)
 
     def current_time():
         return datetime.now().isoformat(timespec="seconds")
@@ -117,27 +117,27 @@ def load_homework():
             if not isinstance(subject, str) or not subject.strip():
                 raise ValueError("科目名称必须是非空字符串")
             if not isinstance(assignments, list):
-                raise ValueError("科目项目必须是 JSON 数组")
+                raise ValueError("科目作业必须是 JSON 数组")
             valid_assignments = []
             for assignment in assignments:
                 if isinstance(assignment, str) and assignment.strip():
                     valid_assignments.append(
                         {
-                            "project": assignment.strip(),
+                            "assignment": assignment.strip(),
                             "hide": False,
                             "date_modified": current_time(),
                         }
                     )
                 elif isinstance(assignment, dict):
-                    project_text = assignment.get("project")
+                    assignment_text = assignment.get("assignment")
                     if (
-                        isinstance(project_text, str)
-                        and project_text.strip()
+                        isinstance(assignment_text, str)
+                        and assignment_text.strip()
                         and isinstance(assignment.get("hide", False), bool)
                     ):
                         valid_assignments.append(
                             {
-                            "project": project_text.strip(),
+                            "assignment": assignment_text.strip(),
                             "hide": assignment.get("hide", False),
                             "ignore_prefix": assignment.get("ignore_prefix", False) is True,
                             "ignore_suffix": assignment.get("ignore_suffix", False) is True,
@@ -149,25 +149,25 @@ def load_homework():
                             }
                         )
                     else:
-                        raise ValueError("项目项必须是非空字符串")
+                        raise ValueError("作业项必须是非空字符串")
                 else:
-                    raise ValueError("项目项必须是非空字符串")
-            homework[subject] = valid_assignments
+                    raise ValueError("作业项必须是非空字符串")
+            entries[subject] = valid_assignments
 
-    return homework, config
-
-
-def save_homework(homework):
-    save_homework_data(HOMEWORK_FILE, [{subject: assignments} for subject, assignments in homework.items()])
+    return entries, config
 
 
-class HomeworkEditor:
+def save_assignment(assignment):
+    save_assignment_data(ASSIGNMENT_FILE, [{subject: assignments} for subject, assignments in assignment.items()])
+
+
+class editor:
     def __init__(self, root):
         self.root = root
         enable_touch_keyboard(root)
         set_window_icon(root, __file__)
-        self.root.title("Homework Manager 项目编辑器")
-        self.homework, self.config = load_homework()
+        self.root.title("Homework Manager 作业编辑器")
+        self.assignment, self.config = load_assignment()
         configure_tk_scaling(root)
         set_window_size_percent(
             root,
@@ -178,11 +178,14 @@ class HomeworkEditor:
         self.status_text = tk.StringVar(value="就绪")
         self.undo_stack = []
         self.redo_stack = []
+        self._dirty = False
+        self.management_action_buttons = {}
 
         self.create_widgets()
+        self._update_save_button()
         self.refresh_subjects()
-        self.reload_event = create_config_reload_event("homework_editor")
-        self.shutdown_event = create_shutdown_event("homework_editor")
+        self.reload_event = create_config_reload_event("assignment_editor")
+        self.shutdown_event = create_shutdown_event("assignment_editor")
         if self.reload_event is not None:
             threading.Thread(target=self.wait_for_reload, daemon=True).start()
         if self.shutdown_event is not None:
@@ -205,7 +208,9 @@ class HomeworkEditor:
 
     def reload_config(self):
         try:
-            _, self.config = load_homework()
+            _, self.config = load_assignment()
+            self._dirty = False
+            self._update_save_button()
             self._context_status("已从文件刷新配置")
         except (OSError, json.JSONDecodeError, ValueError) as error:
             self._context_status("刷新配置失败（{}）".format(error))
@@ -236,7 +241,7 @@ class HomeworkEditor:
         main.columnconfigure(1, weight=1)
 
         ttk.Label(main, text="科目").grid(row=0, column=0, sticky="w", padx=(0, 12))
-        ttk.Label(main, text="项目").grid(row=0, column=1, sticky="w")
+        ttk.Label(main, text="作业").grid(row=0, column=1, sticky="w")
 
         subject_frame = ttk.Frame(main)
         subject_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 12))
@@ -327,9 +332,9 @@ class HomeworkEditor:
         self.undo_button.grid(row=0, column=1, sticky="e", padx=(0, 4))
         self.redo_button = ttk.Button(bottom, text="恢复", command=self.redo, state="disabled")
         self.redo_button.grid(row=0, column=2, sticky="e", padx=(0, 4))
-        self.save_button = ttk.Button(bottom, text="保存项目", command=self.save)
+        self.save_button = ttk.Button(bottom, text="保存作业", command=self.save)
         self.backup_button = ttk.Button(
-            bottom, text="项目备份管理", command=lambda: self.open_homework_backup_manager(self.root)
+            bottom, text="作业备份管理", command=lambda: self.open_assignment_backup_manager(self.root)
         )
         self.dashboard_button = ttk.Button(
             bottom, text="仪表盘...", command=self.open_dashboard
@@ -355,7 +360,7 @@ class HomeworkEditor:
         subject = self.selected_subject.get()
         dialog = tk.Toplevel(self.root)
         set_window_icon(dialog, __file__)
-        dialog.title("所有项目操作")
+        dialog.title("所有作业操作")
         dialog.transient(self.root)
         dialog.grab_set()
         self.all_actions_dialog = dialog
@@ -364,16 +369,16 @@ class HomeworkEditor:
         frame = ttk.Frame(dialog, padding=14)
         frame.pack(fill="both", expand=True)
         selection = self.assignment_list.curselection()
-        assignments = self.homework.get(subject, []) if subject else []
-        project = assignments[selection[0]]["project"] if selection and selection[0] < len(assignments) else "全部项目"
-        project = project.replace("\r\n", "\n").replace("\r", "\n")
-        project = project.split("\n", 1)[0].strip()
-        project = " ".join(project.split())
-        if len(project) > 24:
-            project = project[:23] + "..."
+        assignments = self.assignment.get(subject, []) if subject else []
+        assignment = assignments[selection[0]]["assignment"] if selection and selection[0] < len(assignments) else "全部作业"
+        assignment = assignment.replace("\r\n", "\n").replace("\r", "\n")
+        assignment = assignment.split("\n", 1)[0].strip()
+        assignment = " ".join(assignment.split())
+        if len(assignment) > 24:
+            assignment = assignment[:23] + "..."
         ttk.Label(
             frame,
-            text="对 {} 或其中的\n {} 进行……".format(self._subject_name(subject), project),
+            text="对 {} 或其中的\n {} 进行……".format(self._subject_name(subject), assignment),
         ).pack(anchor="w", pady=(0, 10))
         actions = ttk.Frame(frame)
         actions.pack(fill="x")
@@ -413,8 +418,8 @@ class HomeworkEditor:
         actions = [
             ("undo", "撤销", self.undo, self.undo_button),
             ("redo", "恢复", self.redo, self.redo_button),
-            ("save", "保存项目", self.save, None),
-            ("backup", "项目备份管理", lambda: self.open_homework_backup_manager(dialog), None),
+            ("save", "保存作业", self.save, self.save_button),
+            ("backup", "作业备份管理", lambda: self.open_assignment_backup_manager(dialog), None),
             ("dashboard", "仪表盘...", self.open_dashboard, None),
         ]
         self.management_action_buttons = {}
@@ -437,8 +442,8 @@ class HomeworkEditor:
 
     def _management_action_specs(self):
         return [("undo", "撤销", self.undo, self.undo_button), ("redo", "恢复", self.redo, self.redo_button),
-                ("save", "保存项目", self.save, None),
-                ("backup", "项目备份管理", lambda: self.open_homework_backup_manager(self.root), None),
+                ("save", "保存作业", self.save, self.save_button),
+                ("backup", "作业备份管理", lambda: self.open_assignment_backup_manager(self.root), None),
                 ("dashboard", "仪表盘...", self.open_dashboard, None)]
 
     def open_dashboard(self):
@@ -447,7 +452,7 @@ class HomeworkEditor:
         else:
             executable = Path(sys.executable).with_name("pythonw.exe")
             command = [str(executable if executable.exists() else sys.executable),
-                       str(APPLICATION_DIR / "HWMConfigEditor.py")]
+                       str(APPLICATION_DIR / "dashboard.py")]
         subprocess.Popen(command, cwd=str(APPLICATION_DIR),
                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
@@ -495,22 +500,22 @@ class HomeworkEditor:
                 widget.grid_remove()
         self.all_management_button.grid(row=0, column=column, sticky="e")
 
-    def open_homework_backup_manager(self, parent):
+    def open_assignment_backup_manager(self, parent):
         backup_dir = DATA_DIR / "backup"
         backups = sorted(
-            (path for path in backup_dir.glob("homework*.json.bak") if path.is_file()),
+            (path for path in backup_dir.glob("assignment*.json.bak") if path.is_file()),
             key=lambda path: path.stat().st_mtime,
             reverse=True,
         )
         dialog = tk.Toplevel(parent)
         set_window_icon(dialog, __file__)
-        dialog.title("项目备份管理")
+        dialog.title("作业备份管理")
         dialog.transient(parent)
         dialog.grab_set()
         configure_tk_scaling(dialog)
         dialog.columnconfigure(0, weight=1)
         dialog.rowconfigure(1, weight=1)
-        ttk.Label(dialog, text="选择要恢复的项目备份：").grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 6))
+        ttk.Label(dialog, text="选择要恢复的作业备份：").grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 6))
         backup_list = tk.Listbox(dialog, exportselection=False)
         backup_list.grid(row=1, column=0, sticky="nsew", padx=(10, 0), pady=(0, 8))
         scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=backup_list.yview)
@@ -521,13 +526,13 @@ class HomeworkEditor:
         if backups:
             backup_list.selection_set(0)
         else:
-            backup_list.insert(tk.END, "没有可用的项目备份")
+            backup_list.insert(tk.END, "没有可用的作业备份")
             backup_list.configure(state="disabled")
         buttons = ttk.Frame(dialog)
         buttons.grid(row=2, column=0, columnspan=2, sticky="e", padx=10, pady=(0, 10))
 
         def refresh():
-            backups[:] = sorted((p for p in backup_dir.glob("homework*.json.bak") if p.is_file()), key=lambda p: p.stat().st_mtime, reverse=True)
+            backups[:] = sorted((p for p in backup_dir.glob("assignment*.json.bak") if p.is_file()), key=lambda p: p.stat().st_mtime, reverse=True)
             backup_list.configure(state="normal")
             backup_list.delete(0, tk.END)
             for path in backups:
@@ -535,25 +540,27 @@ class HomeworkEditor:
             if backups:
                 backup_list.selection_set(0)
             else:
-                backup_list.insert(tk.END, "没有可用的项目备份")
+                backup_list.insert(tk.END, "没有可用的作业备份")
                 backup_list.configure(state="disabled")
 
         def restore():
             selection = backup_list.curselection()
             if not selection or not backups:
                 return
-            if not messagebox.askyesno("恢复项目备份", "恢复后，当前项目数据将被备份覆盖。继续吗？", parent=dialog):
+            if not messagebox.askyesno("恢复作业备份", "恢复后，当前作业数据将被备份覆盖。继续吗？", parent=dialog):
                 return
             try:
                 backup_dir.mkdir(parents=True, exist_ok=True)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                shutil.copy2(HOMEWORK_FILE, backup_dir / "homework_{}.json.bak".format(timestamp))
-                shutil.copy2(backups[selection[0]], HOMEWORK_FILE)
-                self.homework, self.config = load_homework()
+                shutil.copy2(ASSIGNMENT_FILE, backup_dir / "assignment_{}.json.bak".format(timestamp))
+                shutil.copy2(backups[selection[0]], ASSIGNMENT_FILE)
+                self.assignment, self.config = load_assignment()
                 self.refresh_subjects()
                 self.undo_stack.clear()
                 self.redo_stack.clear()
                 self._update_history_buttons()
+                self._dirty = False
+                self._update_save_button()
                 notify_config_saved()
             except (OSError, ValueError, json.JSONDecodeError) as error:
                 messagebox.showerror("恢复失败", str(error), parent=dialog)
@@ -564,7 +571,7 @@ class HomeworkEditor:
             selection = backup_list.curselection()
             if not selection or not backups:
                 return
-            if not messagebox.askyesno("确认删除", "确定删除此项目备份吗？此操作不可恢复。", parent=dialog):
+            if not messagebox.askyesno("确认删除", "确定删除此作业备份吗？此操作不可恢复。", parent=dialog):
                 return
             try:
                 backups[selection[0]].unlink()
@@ -620,24 +627,38 @@ class HomeworkEditor:
             else:
                 button.pack_forget()
 
-    def _context_status(self, action, subject=None, project=None):
+    def _context_status(self, action, subject=None, assignment=None):
         subject = subject if subject is not None else self.selected_subject.get()
-        if project is None and subject:
+        if assignment is None and subject:
             selection = self.assignment_list.curselection()
-            assignments = self.homework.get(subject, [])
+            assignments = self.assignment.get(subject, [])
             if selection and selection[0] < len(assignments):
-                project = assignments[selection[0]]["project"]
-        project = project or "全部项目"
+                assignment = assignments[selection[0]]["assignment"]
+        assignment = assignment or "全部作业"
         self.status_text.set(
             "{}：{}（{}）".format(
-                action, project, self._subject_name(subject)
+                action, assignment, self._subject_name(subject)
             )
         )
 
     def _record_undo(self):
-        self.undo_stack.append(copy.deepcopy(self.homework))
+        self.undo_stack.append(copy.deepcopy(self.assignment))
         self.redo_stack.clear()
         self._update_history_buttons()
+        self._set_dirty(True)
+
+    def _set_dirty(self, dirty):
+        self._dirty = dirty
+        self._update_save_button()
+
+    def _update_save_button(self):
+        state = "normal" if self._dirty else "disabled"
+        self.save_button.configure(state=state)
+        dialog = getattr(self, "all_management_dialog", None)
+        if dialog is not None and dialog.winfo_exists():
+            button = self.management_action_buttons.get("save")
+            if button is not None:
+                button.configure(state=state)
 
     def _update_history_buttons(self):
         self.undo_button.configure(state="normal" if self.undo_stack else "disabled")
@@ -649,12 +670,13 @@ class HomeworkEditor:
         subject = self.selected_subject.get()
         selection = self.assignment_list.curselection()
         index = selection[0] if selection else None
-        self.redo_stack.append(copy.deepcopy(self.homework))
-        self.homework = self.undo_stack.pop()
+        self.redo_stack.append(copy.deepcopy(self.assignment))
+        self.assignment = self.undo_stack.pop()
         self.refresh_subjects(subject)
-        if subject in self.homework and index is not None and self.homework[subject]:
+        if subject in self.assignment and index is not None and self.assignment[subject]:
             self.refresh_assignments(index)
         self._update_history_buttons()
+        self._set_dirty(True)
         self._context_status("已撤销")
 
     def redo(self):
@@ -663,16 +685,17 @@ class HomeworkEditor:
         subject = self.selected_subject.get()
         selection = self.assignment_list.curselection()
         index = selection[0] if selection else None
-        self.undo_stack.append(copy.deepcopy(self.homework))
-        self.homework = self.redo_stack.pop()
+        self.undo_stack.append(copy.deepcopy(self.assignment))
+        self.assignment = self.redo_stack.pop()
         self.refresh_subjects(subject)
-        if subject in self.homework and index is not None and self.homework[subject]:
+        if subject in self.assignment and index is not None and self.assignment[subject]:
             self.refresh_assignments(index)
         self._update_history_buttons()
+        self._set_dirty(True)
         self._context_status("已恢复")
 
     def refresh_subjects(self, subject_to_select=None):
-        subjects = list(self.homework)
+        subjects = list(self.assignment)
         self.subject_list.delete(0, tk.END)
         for subject in subjects:
             self.subject_list.insert(tk.END, SUBJECT_NAMES.get(subject, subject))
@@ -692,10 +715,10 @@ class HomeworkEditor:
 
     def refresh_assignments(self, assignment_index=None):
         self.assignment_list.delete(0, tk.END)
-        assignments = self.homework.get(self.selected_subject.get(), [])
+        assignments = self.assignment.get(self.selected_subject.get(), [])
         for assignment in assignments:
             index = self.assignment_list.size()
-            display_text = assignment["project"]
+            display_text = assignment["assignment"]
             if assignment["hide"]:
                 display_text = "• " + display_text
             self.assignment_list.insert(tk.END, display_text)
@@ -716,7 +739,7 @@ class HomeworkEditor:
         selection = self.subject_list.curselection()
         if not selection:
             return
-        subject = list(self.homework)[selection[0]]
+        subject = list(self.assignment)[selection[0]]
         self.selected_subject.set(subject)
         self.refresh_assignments()
 
@@ -726,10 +749,10 @@ class HomeworkEditor:
     def _update_buttons_state(self, _event=None):
         selection = self.assignment_list.curselection()
         subject = self.selected_subject.get()
-        total = len(self.homework.get(subject, [])) if subject else 0
+        total = len(self.assignment.get(subject, [])) if subject else 0
         has_subject = bool(subject)
         has_selection = bool(selection and subject)
-        assignments = self.homework.get(subject, []) if subject else []
+        assignments = self.assignment.get(subject, []) if subject else []
         has_hidden = any(assignment["hide"] for assignment in assignments)
         self.add_button.configure(state="normal" if has_subject else "disabled")
         self.toggle_all_button.configure(
@@ -742,7 +765,7 @@ class HomeworkEditor:
         self.move_subject_button.configure(state="normal" if has_selection else "disabled")
         if has_selection:
             index = selection[0]
-            selected_assignment = self.homework[subject][index]
+            selected_assignment = self.assignment[subject][index]
             scheduled = bool(selected_assignment.get("schedule_rules"))
             hidden = selected_assignment["hide"]
             self.toggle_button.configure(
@@ -761,7 +784,7 @@ class HomeworkEditor:
         subject = self.selected_subject.get()
         dialog = tk.Toplevel(self.root)
         set_window_icon(dialog, __file__)
-        dialog.title("编辑项目" if editing else "添加项目")
+        dialog.title("编辑作业" if editing else "添加作业")
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.minsize(500, 300)
@@ -772,7 +795,7 @@ class HomeworkEditor:
         form.pack(fill="both", expand=True)
         form.rowconfigure(1, weight=1)
         form.columnconfigure(0, weight=1)
-        ttk.Label(form, text="项目内容").grid(
+        ttk.Label(form, text="作业内容").grid(
             row=0, column=0, sticky="w", pady=(0, 6)
         )
         text_frame = ttk.Frame(form)
@@ -787,8 +810,8 @@ class HomeworkEditor:
         scrollbar.grid(row=0, column=1, sticky="ns")
         editor.configure(yscrollcommand=scrollbar.set)
         if editing:
-            current_assignment = self.homework[subject][assignment_index]
-            editor.insert("1.0", current_assignment["project"])
+            current_assignment = self.assignment[subject][assignment_index]
+            editor.insert("1.0", current_assignment["assignment"])
         else:
             current_assignment = {}
 
@@ -800,30 +823,30 @@ class HomeworkEditor:
         property_row.grid(row=2, column=0, sticky="w", pady=(8, 0))
         ttk.Checkbutton(property_row, text="忽略前缀", variable=ignore_prefix_var).pack(side="left", padx=(0, 12))
         ttk.Checkbutton(property_row, text="忽略后缀", variable=ignore_suffix_var).pack(side="left", padx=(0, 12))
-        ttk.Checkbutton(property_row, text="次要项目", variable=secondary_var).pack(side="left")
-        ttk.Button(property_row, text="计划项目", command=lambda: self._schedule_rules_dialog(dialog, schedule_rules)).pack(side="left", padx=(12, 0))
+        ttk.Checkbutton(property_row, text="次要作业", variable=secondary_var).pack(side="left")
+        ttk.Button(property_row, text="计划作业", command=lambda: self._schedule_rules_dialog(dialog, schedule_rules)).pack(side="left", padx=(12, 0))
 
         def save_assignment():
             value = editor.get("1.0", "end-1c").strip()
             if not value:
-                messagebox.showwarning("输入无效", "项目内容不能为空。", parent=dialog)
+                messagebox.showwarning("输入无效", "作业内容不能为空。", parent=dialog)
                 editor.focus_set()
                 return
             now = datetime.now().isoformat(timespec="seconds")
             if editing:
                 self._record_undo()
-                self.homework[subject][assignment_index]["project"] = value
-                self.homework[subject][assignment_index]["ignore_prefix"] = ignore_prefix_var.get()
-                self.homework[subject][assignment_index]["ignore_suffix"] = ignore_suffix_var.get()
-                self.homework[subject][assignment_index]["secondary"] = secondary_var.get()
-                self.homework[subject][assignment_index]["schedule_rules"] = schedule_rules
-                self.homework[subject][assignment_index]["date_modified"] = now
+                self.assignment[subject][assignment_index]["assignment"] = value
+                self.assignment[subject][assignment_index]["ignore_prefix"] = ignore_prefix_var.get()
+                self.assignment[subject][assignment_index]["ignore_suffix"] = ignore_suffix_var.get()
+                self.assignment[subject][assignment_index]["secondary"] = secondary_var.get()
+                self.assignment[subject][assignment_index]["schedule_rules"] = schedule_rules
+                self.assignment[subject][assignment_index]["date_modified"] = now
                 selected_index = assignment_index
                 self._context_status("已编辑", subject, value)
             else:
                 self._record_undo()
-                self.homework[subject].append({
-                    "project": value,
+                self.assignment[subject].append({
+                    "assignment": value,
                     "hide": False,
                     "ignore_prefix": ignore_prefix_var.get(),
                     "ignore_suffix": ignore_suffix_var.get(),
@@ -831,9 +854,9 @@ class HomeworkEditor:
                     "schedule_rules": schedule_rules,
                     "date_modified": now,
                 })
-                selected_index = len(self.homework[subject]) - 1
+                selected_index = len(self.assignment[subject]) - 1
                 self._context_status("已添加", subject, value)
-            refresh_scheduled_projects(self.homework)
+            refresh_scheduled_assignments(self.assignment)
             self.refresh_assignments(selected_index)
             dialog.destroy()
 
@@ -929,7 +952,7 @@ class HomeworkEditor:
         selection = self.assignment_list.curselection()
         subject = self.selected_subject.get()
         if not subject or not selection:
-            messagebox.showwarning("未选择项目", "请先选择要编辑的项目项。", parent=self.root)
+            messagebox.showwarning("未选择作业", "请先选择要编辑的作业项。", parent=self.root)
             return
         self._open_assignment_dialog(selection[0])
 
@@ -937,10 +960,10 @@ class HomeworkEditor:
         subject = self.selected_subject.get()
         selection = self.assignment_list.curselection()
         if not subject or not selection:
-            messagebox.showwarning("未选择项目", "请先选择要操作的项目。", parent=self.root)
+            messagebox.showwarning("未选择作业", "请先选择要操作的作业。", parent=self.root)
             return None, None, None
         index = selection[0]
-        return subject, index, self.homework[subject][index]
+        return subject, index, self.assignment[subject][index]
 
     def copy_assignment(self):
         subject, index, assignment = self._selected_assignment()
@@ -949,18 +972,18 @@ class HomeworkEditor:
         self._record_undo()
         duplicate = copy.deepcopy(assignment)
         duplicate["date_modified"] = datetime.now().isoformat(timespec="seconds")
-        self.homework[subject].insert(index + 1, duplicate)
+        self.assignment[subject].insert(index + 1, duplicate)
         self.refresh_assignments(index + 1)
-        self._context_status("已复制", subject, duplicate.get("project"))
+        self._context_status("已复制", subject, duplicate.get("assignment"))
 
     def move_assignment_subject(self):
         source, index, assignment = self._selected_assignment()
         if assignment is None:
             return
-        subjects = list(self.homework)
+        subjects = list(self.assignment)
         dialog = tk.Toplevel(self.root)
         set_window_icon(dialog, __file__)
-        dialog.title("移动项目")
+        dialog.title("移动作业")
         dialog.transient(self.root)
         dialog.grab_set()
         frame = ttk.Frame(dialog, padding=14)
@@ -976,12 +999,12 @@ class HomeworkEditor:
             if target == source:
                 return
             self._record_undo()
-            moved = self.homework[source].pop(index)
+            moved = self.assignment[source].pop(index)
             moved["date_modified"] = datetime.now().isoformat(timespec="seconds")
-            self.homework.setdefault(target, []).append(moved)
+            self.assignment.setdefault(target, []).append(moved)
             self.refresh_subjects(target)
-            self.refresh_assignments(len(self.homework[target]) - 1)
-            self._context_status("已移动", target, moved.get("project"))
+            self.refresh_assignments(len(self.assignment[target]) - 1)
+            self._context_status("已移动", target, moved.get("assignment"))
         buttons = ttk.Frame(frame); buttons.pack(fill="x", pady=(10, 0))
         ttk.Button(buttons, text="确定", command=confirm).pack(side="right")
         ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side="right", padx=(0, 6))
@@ -991,10 +1014,10 @@ class HomeworkEditor:
         selection = self.assignment_list.curselection()
         subject = self.selected_subject.get()
         if not selection or not subject:
-            messagebox.showwarning("未选择项目", "请先选择要切换显示状态的项目项。", parent=self.root)
+            messagebox.showwarning("未选择作业", "请先选择要切换显示状态的作业项。", parent=self.root)
             return
         index = selection[0]
-        assignment = self.homework[subject][index]
+        assignment = self.assignment[subject][index]
         if assignment.get("schedule_rules"):
             return
         self._record_undo()
@@ -1002,11 +1025,11 @@ class HomeworkEditor:
         assignment["date_modified"] = datetime.now().isoformat(timespec="seconds")
         self.refresh_assignments(index)
         state = "已隐藏" if assignment["hide"] else "已显示"
-        self._context_status(state, subject, assignment["project"])
+        self._context_status(state, subject, assignment["assignment"])
 
     def toggle_all_assignments(self):
         subject = self.selected_subject.get()
-        assignments = self.homework.get(subject, []) if subject else []
+        assignments = self.assignment.get(subject, []) if subject else []
         if not assignments:
             return
         show_all = any(assignment["hide"] for assignment in assignments)
@@ -1020,23 +1043,23 @@ class HomeworkEditor:
                 assignment["date_modified"] = now
         self.refresh_assignments()
         self._context_status(
-            "已显示" if show_all else "已隐藏", subject, "全部项目"
+            "已显示" if show_all else "已隐藏", subject, "全部作业"
         )
 
     def delete_assignment(self):
         selection = self.assignment_list.curselection()
         subject = self.selected_subject.get()
         if not subject or not selection:
-            messagebox.showwarning("未选择项目", "请先选择要删除的项目项。", parent=self.root)
+            messagebox.showwarning("未选择作业", "请先选择要删除的作业项。", parent=self.root)
             return
-        if not messagebox.askyesno("确认删除", "确定删除选中的项目项吗？", parent=self.root):
+        if not messagebox.askyesno("确认删除", "确定删除选中的作业项吗？", parent=self.root):
             return
         index = selection[0]
-        project = self.homework[subject][index]["project"]
+        assignment = self.assignment[subject][index]["assignment"]
         self._record_undo()
-        del self.homework[subject][index]
+        del self.assignment[subject][index]
         self.refresh_assignments(index)
-        self._context_status("已删除", subject, project)
+        self._context_status("已删除", subject, assignment)
         dialog = getattr(self, "all_actions_dialog", None)
         if dialog is not None and dialog.winfo_exists():
             dialog.destroy()
@@ -1044,15 +1067,15 @@ class HomeworkEditor:
 
     def delete_all_assignments(self):
         subject = self.selected_subject.get()
-        assignments = self.homework.get(subject, []) if subject else []
+        assignments = self.assignment.get(subject, []) if subject else []
         if not assignments:
             return
-        if not messagebox.askyesno("确认删除", "确定删除 {} 中的所有项目吗？此操作可撤销。".format(self._subject_name(subject)), parent=self.root):
+        if not messagebox.askyesno("确认删除", "确定删除 {} 中的所有作业吗？此操作可撤销。".format(self._subject_name(subject)), parent=self.root):
             return
         self._record_undo()
-        self.homework[subject] = []
+        self.assignment[subject] = []
         self.refresh_assignments()
-        self._context_status("已删除全部项目", subject, "全部项目")
+        self._context_status("已删除全部作业", subject, "全部作业")
         dialog = getattr(self, "all_actions_dialog", None)
         if dialog is not None and dialog.winfo_exists():
             dialog.destroy()
@@ -1064,11 +1087,11 @@ class HomeworkEditor:
         if not selection or not subject:
             return
         index = selection[0]
-        assignments = self.homework[subject]
+        assignments = self.assignment[subject]
         new_index = index + direction
         if new_index < 0 or new_index >= len(assignments):
             return
-        project = assignments[index]["project"]
+        assignment = assignments[index]["assignment"]
         self._record_undo()
         assignments[index], assignments[new_index] = assignments[new_index], assignments[index]
         now = datetime.now().isoformat(timespec="seconds")
@@ -1076,7 +1099,7 @@ class HomeworkEditor:
         assignments[new_index]["date_modified"] = now
         self.refresh_assignments(new_index)
         state = "已上置" if direction < 0 else "已下置"
-        self._context_status(state, subject, project)
+        self._context_status(state, subject, assignment)
 
     def move_up_assignment(self):
         self._move_assignment(-1)
@@ -1085,26 +1108,30 @@ class HomeworkEditor:
         self._move_assignment(1)
 
     def save(self):
+        if not self._dirty:
+            return
         try:
-            refresh_scheduled_projects(self.homework)
-            save_homework(self.homework)
+            refresh_scheduled_assignments(self.assignment)
+            save_assignment(self.assignment)
         except (OSError, TypeError, ValueError) as error:
             messagebox.showerror("保存失败", str(error), parent=self.root)
             return
-        self._context_status("已保存到 homework.json")
+        self._dirty = False
+        self._update_save_button()
+        self._context_status("已保存到 assignment.json")
         self.refresh_assignments()
         notify_config_saved()
-        show_windows_notification("已保存项目")
+        show_windows_notification("已保存各科所有作业", "保存完成")
 
 
 def main():
     enable_high_dpi()
-    from HWMRuntime import acquire_single_instance
-    if not acquire_single_instance("homework_editor"):
+    from runtime import acquire_single_instance
+    if not acquire_single_instance("assignment_editor"):
         return
     root = tk.Tk()
     try:
-        HomeworkEditor(root)
+        editor(root)
         place_window_bottom_right(root)
     except (OSError, json.JSONDecodeError, ValueError) as error:
         messagebox.showerror("加载失败", str(error), parent=root)

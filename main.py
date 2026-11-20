@@ -33,8 +33,8 @@ from tkinter import messagebox, ttk
 
 from PIL import Image, ImageDraw
 
-from HWMConfig import data_directory, load_config, save_config, load_homework_data, save_homework_data
-from HWMRuntime import (
+from config import data_directory, default_document, initialize_data_directory, load_config, save_config, load_assignment_data, save_assignment_data
+from runtime import (
     close_main_control_events,
     configure_tk_scaling,
     create_main_control_events,
@@ -48,9 +48,9 @@ from HWMRuntime import (
     wait_for_main_action,
     show_windows_notification,
 )
-from HWMSubscriptionService import maybe_send_scheduled
-from HWMAppIdentity import register_app
-from HomeworkEditor import refresh_scheduled_projects
+from subscriptionService import maybe_send_scheduled
+from appIdentity import register_app
+from editor import refresh_scheduled_assignments
 
 
 APPLICATION_DIR = (
@@ -62,17 +62,37 @@ RESOURCE_DIR = APPLICATION_DIR
 DATA_DIR = data_directory(RESOURCE_DIR)
 CONFIG_FILE = DATA_DIR / "config.json"
 TRAY_ICON_FILE = (
-    Path(getattr(sys, "_MEIPASS", APPLICATION_DIR)) / "hwm.ico"
+    Path(getattr(sys, "_MEIPASS", APPLICATION_DIR)) / "icon.ico"
     if getattr(sys, "frozen", False)
-    else APPLICATION_DIR / "hwm.ico"
+    else APPLICATION_DIR / "icon.ico"
 )
-DISPLAY_MUTEX_NAME = "Local\\HomeworkDisplaySingleInstance"
+DISPLAY_MUTEX_NAME = "Local\\displaySingleInstance"
 MAIN_MUTEX_NAME = "Local\\HomeworkManagerMainInstance"
 STORAGE_FILE = DATA_DIR / "storage.json"
 STORAGE_WRITE_INTERVAL_SECONDS = 15 * 60
 
 
-def reset_homework_if_new_day():
+def create_assignment_backup(assignment_file, backup_dir):
+    """创建作业文件备份。若作业文件缺失，则先通知再新建默认文件。
+
+    返回 True 表示原文件缺失（已新建，未生成历史备份）；False 表示已生成备份。
+    """
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    if assignment_file.is_file():
+        timestamp = datetime.now().strftime("%Y%m%d_%H")
+        backup_file = backup_dir / "assignment_{}.json.bak".format(timestamp)
+        suffix = 1
+        while backup_file.exists():
+            backup_file = backup_dir / "assignment_{}_{}.json.bak".format(timestamp, suffix)
+            suffix += 1
+        shutil.copy2(assignment_file, backup_file)
+        return False
+    show_windows_notification("活跃的作业文件意外丢失\n已将作业文件重置为空", "备份时出现错误")
+    save_assignment_data(assignment_file, default_document()[1]["data"])
+    return True
+
+
+def reset_assignment_if_new_day():
     today = datetime.now().date()
     try:
         stored = json.loads(STORAGE_FILE.read_text(encoding="utf-8"))
@@ -81,37 +101,30 @@ def reset_homework_if_new_day():
         previous = None
 
     if previous is not None and previous < today:
-        homework_file = DATA_DIR / "homework.json"
-        backup_dir = DATA_DIR / "backup"
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H")
-        backup_file = backup_dir / "homework_{}.json.bak".format(timestamp)
-        suffix = 1
-        while backup_file.exists():
-            backup_file = backup_dir / "homework_{}_{}.json.bak".format(timestamp, suffix)
-            suffix += 1
-        shutil.copy2(homework_file, backup_file)
+        assignment_file = DATA_DIR / "assignment.json"
+        assignment_missing = create_assignment_backup(assignment_file, DATA_DIR / "backup")
 
-        homework = load_homework_data(homework_file, CONFIG_FILE)
-        for subject in homework:
+        assignment = load_assignment_data(assignment_file, CONFIG_FILE)
+        for subject in assignment:
             if not isinstance(subject, dict):
                 continue
             for assignments in subject.values():
                 if isinstance(assignments, list):
-                    for index, assignment in enumerate(assignments):
-                        if isinstance(assignment, dict):
-                            assignment["hide"] = True
-                        elif isinstance(assignment, str):
-                            assignments[index] = {"project": assignment, "hide": True}
-        save_homework_data(homework_file, homework)
+                    for index, entry in enumerate(assignments):
+                        if isinstance(entry, dict):
+                            entry["hide"] = True
+                        elif isinstance(entry, str):
+                            assignments[index] = {"assignment": entry, "hide": True}
+        save_assignment_data(assignment_file, assignment)
         normalized = {}
-        for subject in homework:
+        for subject in assignment:
             if isinstance(subject, dict):
                 for name, assignments in subject.items():
                     normalized[name] = assignments
-        refresh_scheduled_projects(normalized)
-        save_homework_data(homework_file, [{subject: assignments} for subject, assignments in normalized.items()])
-        show_windows_notification("已重置所有科目的所有项目")
+        refresh_scheduled_assignments(normalized)
+        save_assignment_data(assignment_file, [{subject: assignments} for subject, assignments in normalized.items()])
+        if not assignment_missing:
+            show_windows_notification("已重置所有科目的所有作业", "重置完成")
 
 
 def write_storage_timestamp():
@@ -162,11 +175,11 @@ def launch_component(component):
         ]
     else:
         names = {
-            "display": "HomeworkDisplay.py",
-            "dashboard": "HWMConfigEditor.py",
-            "homework_editor": "HomeworkEditor.py",
-            "subscription_manager": "HWMSubscriptionManager.py",
-            "project_preview": "HWMProjectPreview.py",
+            "display": "display.py",
+            "dashboard": "dashboard.py",
+            "assignment_editor": "editor.py",
+            "subscription_manager": "subscriptionManager.py",
+            "assignment_preview": "preview.py",
             "main": "main.py",
         }
         target = APPLICATION_DIR / names[component]
@@ -243,11 +256,18 @@ def ensure_display_running():
 def load_tray_click_action():
     config = load_config(CONFIG_FILE)
     action = config.get("tray_click_action", "dashboard")
-    return action if action in ("dashboard", "homework_editor", "menu") else "dashboard"
+    return action if action in ("dashboard", "assignment_editor", "menu") else "dashboard"
+
+
+def load_open_action():
+    config = load_config(CONFIG_FILE)
+    action = config.get("open_action", "dashboard")
+    return action if action in ("dashboard", "assignment_editor") else "dashboard"
 
 
 def show_school_class_prompt():
-    config = load_config(CONFIG_FILE)
+    config_file = CONFIG_FILE if CONFIG_FILE.is_file() else RESOURCE_DIR / "config.json"
+    config = load_config(config_file)
     if str(config.get("school", "")).strip() and str(config.get("class", "")).strip():
         return True, False
 
@@ -294,6 +314,9 @@ def show_school_class_prompt():
         config["class"] = class_name
         try:
             save_config(CONFIG_FILE, config)
+            assignment_file = DATA_DIR / "assignment.json"
+            if not assignment_file.is_file():
+                save_assignment_data(assignment_file, default_document()[1]["data"])
             register_app()
         except OSError as error:
             messagebox.showerror("保存或应用注册失败", str(error), parent=root)
@@ -328,7 +351,7 @@ def create_tray_image():
 
 def shutdown_components():
     for component in (
-        "config_editor", "homework_editor", "subscription_manager", "project_preview", "display"
+        "config_editor", "assignment_editor", "subscription_manager", "assignment_preview", "display"
     ):
         request_shutdown(component)
 
@@ -343,7 +366,10 @@ def main():
     prompt_succeeded, first_run_completed = show_school_class_prompt()
     if not prompt_succeeded:
         return
-    reset_homework_if_new_day()
+    initialize_data_directory(RESOURCE_DIR)
+    if not first_run_completed:
+        register_app()
+    reset_assignment_if_new_day()
     write_storage_timestamp()
     ensure_display_running()
     tray_click_action = load_tray_click_action()
@@ -376,11 +402,11 @@ def main():
     def open_dashboard(_icon=None, _item=None):
         launch_component("dashboard")
 
-    def open_homework_editor(_icon=None, _item=None):
-        launch_component("homework_editor")
+    def open_assignment_editor(_icon=None, _item=None):
+        launch_component("assignment_editor")
 
-    def open_project_preview(_icon=None, _item=None):
-        launch_component("project_preview")
+    def open_assignment_preview(_icon=None, _item=None):
+        launch_component("assignment_preview")
 
     def stop_hwm(icon, restart=False):
         if restart:
@@ -409,15 +435,15 @@ def main():
         close_main_control_events(main_control_events)
 
     default_dashboard = tray_click_action == "dashboard"
-    default_editor = tray_click_action == "homework_editor"
+    default_editor = tray_click_action == "assignment_editor"
     menu = pystray.Menu(
         pystray.MenuItem("仪表盘", open_dashboard, default=default_dashboard),
         pystray.MenuItem(
-            "项目编辑器",
-            open_homework_editor,
+            "作业编辑器",
+            open_assignment_editor,
             default=default_editor,
         ),
-        pystray.MenuItem("预览项目", open_project_preview),
+        pystray.MenuItem("预览作业", open_assignment_preview),
         pystray.MenuItem("重启程序", restart_hwm),
         pystray.MenuItem("退出", exit_hwm),
     )
@@ -438,8 +464,12 @@ def main():
             pass
 
     threading.Thread(target=wait_for_control_action, daemon=True).start()
-    if first_run_completed:
-        open_dashboard()
+    if "--autostart" not in sys.argv:
+        open_action = load_open_action()
+        if open_action == "dashboard":
+            open_dashboard()
+        elif open_action == "assignment_editor":
+            open_assignment_editor()
     icon.run()
     on_icon_stop(icon)
 
@@ -460,11 +490,11 @@ def run_entry_point():
             raise ValueError("缺少组件名称")
         component = sys.argv[component_index + 1]
         component_modules = {
-            "display": "HomeworkDisplay",
-            "dashboard": "HWMConfigEditor",
-            "homework_editor": "HomeworkEditor",
-            "subscription_manager": "HWMSubscriptionManager",
-            "project_preview": "HWMProjectPreview",
+            "display": "display",
+            "dashboard": "dashboard",
+            "assignment_editor": "editor",
+            "subscription_manager": "subscriptionManager",
+            "assignment_preview": "preview",
         }
         if component not in component_modules:
             raise ValueError("未知组件: {}".format(component))
@@ -477,7 +507,7 @@ if __name__ == "__main__":
     try:
         run_entry_point()
     except Exception:
-        crash_log = RESOURCE_DIR / "hwm_crash.log"
+        crash_log = RESOURCE_DIR / "crash.log"
         try:
             crash_log.write_text(traceback.format_exc(), encoding="utf-8")
         except OSError:

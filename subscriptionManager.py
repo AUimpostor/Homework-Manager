@@ -26,7 +26,7 @@ import webbrowser
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-from HWMRuntime import (
+from runtime import (
     close_shutdown_event,
     configure_tk_scaling,
     create_shutdown_event,
@@ -38,7 +38,7 @@ from HWMRuntime import (
     wait_for_shutdown,
     show_windows_notification,
 )
-from HWMSubscriptionService import (
+from subscriptionService import (
     APP_DIR,
     DEFAULTS,
     SETTINGS_NAME,
@@ -49,10 +49,10 @@ from HWMSubscriptionService import (
     save_settings,
     send_push,
 )
-from HWMAppIdentity import APP_ID
+from appIdentity import APP_ID
 
 
-class SubscriptionManager:
+class subscriptionManager:
     def __init__(self, root):
         self.root = root
         enable_touch_keyboard(root)
@@ -423,7 +423,7 @@ class SubscriptionManager:
 
         ttk.Label(
             form,
-            text="%date% 当前日期；%time% 当前时间\n%n% 昵称；%t% 称呼\n%s% 学校；%c% 班级\n%hw% 作业内容\n格式：HTML",
+            text="%date% 当前日期；%time% 当前时间\n%n% 昵称；%t% 称呼\n%s% 学校；%c% 班级\n%asg% 作业内容\n格式：HTML",
             justify="left",
             wraplength=520,
         ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 2))
@@ -484,7 +484,7 @@ class SubscriptionManager:
             self.settings["schedule_time"] = normalized_time
             self.settings["schedule_notification_enabled"] = self.schedule_notification_enabled.get()
             save_settings(self.settings); self.status.set("定时推送配置已保存")
-            show_windows_notification("已保存定时推送配置")
+            show_windows_notification("已保存定时推送配置", "保存成功")
         except (OSError, ValueError) as error: messagebox.showerror("保存失败", str(error), parent=self.root)
 
     def _open_push_preview(self):
@@ -519,7 +519,7 @@ class SubscriptionManager:
                 mode="w",
                 encoding="utf-8",
                 suffix=".html",
-                prefix="homework-manager-push-preview-",
+                prefix="push-preview-",
                 delete=False,
             ) as preview_file:
                 preview_file.write(document)
@@ -569,12 +569,12 @@ class SubscriptionManager:
 
 def main():
     enable_high_dpi()
-    from HWMRuntime import acquire_single_instance
+    from runtime import acquire_single_instance
     if not acquire_single_instance("subscription_manager"):
         return
     root = tk.Tk()
     try:
-        SubscriptionManager(root)
+        subscriptionManager(root)
         place_window_bottom_right(root)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         messagebox.showerror("加载失败", str(error), parent=root)

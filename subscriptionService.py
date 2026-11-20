@@ -32,8 +32,8 @@ from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
 
-from HWMConfig import data_directory, load_config, load_homework_data
-from HWMAppIdentity import APP_ID
+from config import data_directory, load_config, load_assignment_data
+from appIdentity import APP_ID
 
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
@@ -51,7 +51,7 @@ DEFAULTS = {
     "subscribers": [], "schedule_enabled": False, "schedule_time": "18:00:00",
     "schedule_notification_enabled": True,
     "title_template": "%date% 作业",
-    "body_template": "<b>%n% %t%，您好。这是今天的作业：</b>\n<hr style='height:1px;border-width:0;color:gray;background-color:gray'><blockquote style='border-left: 3px solid #318CE7; padding-left: 12px; margin-left: 0;'>%hw%</blockquote>\n<div style='text-align: right;'><b>%s% %c%</b></div><hr style='height:2px;border-width:0;color:gray;background-color:gray'><div style='text-align: center;'><small>此邮件由 <a href='https://github.com/AUimpostor/Homework-Manager'>Homework Manager</a> 推送管理器自动发送，请不要回复。\n%date% %time%</small></div>",
+    "body_template": "<b>%n% %t%，您好。这是今天的作业：</b>\n<hr style='height:1px;border-width:0;color:gray;background-color:gray'><blockquote style='border-left: 3px solid #318CE7; padding-left: 12px; margin-left: 0;'>%asg%</blockquote>\n<div style='text-align: right;'><b>%s% %c%</b></div><hr style='height:2px;border-width:0;color:gray;background-color:gray'><div style='text-align: center;'><small>此邮件由 <a href='https://github.com/AUimpostor/Homework-Manager'>Homework Manager</a> 推送管理器自动发送，请不要回复。\n%date% %time%</small></div>",
 }
 
 _schedule_lock = threading.Lock()
@@ -143,9 +143,9 @@ def save_settings(settings, directory=APP_DIR):
         stream.write("\n")
     temporary.replace(path)
 
-def homework_text(directory=APP_DIR):
+def assignment_text(directory=APP_DIR):
     data_dir = data_directory(directory)
-    data = load_homework_data(data_dir / "homework.json", data_dir / "config.json")
+    data = load_assignment_data(data_dir / "assignment.json", data_dir / "config.json")
     sections = []
     for item in data:
         if not isinstance(item, dict):
@@ -154,12 +154,12 @@ def homework_text(directory=APP_DIR):
             visible = []
             for assignment in assignments if isinstance(assignments, list) else []:
                 if isinstance(assignment, str) and assignment.strip():
-                    visible.append({"project": assignment.strip()})
+                    visible.append({"assignment": assignment.strip()})
                 elif isinstance(assignment, dict) and not assignment.get("hide", False):
-                    text = assignment.get("project", "")
+                    text = assignment.get("assignment", "")
                     if isinstance(text, str) and text.strip():
                         visible.append({
-                            "project": text.strip(),
+                            "assignment": text.strip(),
                             "ignore_prefix": assignment.get("ignore_prefix", False) is True,
                             "ignore_suffix": assignment.get("ignore_suffix", False) is True,
                             "secondary": assignment.get("secondary", False) is True,
@@ -170,32 +170,32 @@ def homework_text(directory=APP_DIR):
 
 
 def render_push_content(settings, person, directory=APP_DIR):
-    sections = homework_text(directory)
+    sections = assignment_text(directory)
     app_config = load_config(data_directory(directory) / "config.json")
     return _render_push_content(settings, person, sections, app_config)
 
 
-def render_homework_html(directory=APP_DIR):
-    """Render the exact HTML fragment substituted for %hw% in push emails."""
-    sections = homework_text(directory)
+def render_assignment_html(directory=APP_DIR):
+    """Render the exact HTML fragment substituted for %asg% in push emails."""
+    sections = assignment_text(directory)
     app_config = load_config(data_directory(directory) / "config.json")
-    return _render_homework_html(sections, app_config)
+    return _render_assignment_html(sections, app_config)
 
 
-def _render_homework_html(sections, app_config):
+def _render_assignment_html(sections, app_config):
     html_sections = []
     for name, assignments in sections:
-        html_projects = []
+        html_assignments = []
         for assignment in assignments:
-            prefix = "" if assignment.get("ignore_prefix", False) else app_config.get("project_prefix", "")
-            suffix = "" if assignment.get("ignore_suffix", False) else app_config.get("project_suffix", "")
-            text = "{}{}{}".format(prefix, assignment["project"], suffix)
+            prefix = "" if assignment.get("ignore_prefix", False) else app_config.get("assignment_prefix", "")
+            suffix = "" if assignment.get("ignore_suffix", False) else app_config.get("assignment_suffix", "")
+            text = "{}{}{}".format(prefix, assignment["assignment"], suffix)
             html_text = html.escape(text).replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br>")
             font_size = "xx-small" if assignment.get("secondary", False) else "medium"
             # Use table rows: mail clients reliably retain row spacing, while
             # adjacent inline divs and repeated <br> elements may be collapsed.
             row_spacing = "12px" if assignment.get("secondary", False) else "0"
-            html_projects.append(
+            html_assignments.append(
                 '<table role="presentation" cellpadding="0" cellspacing="0" '
                 'style="border-collapse:collapse;width:100%"><tr>'
                 '<td style="font-size:{};padding:0 0 {} 0">{}</td>'
@@ -203,11 +203,11 @@ def _render_homework_html(sections, app_config):
             )
         html_sections.append(
             '<strong style="font-size: large">{}</strong><br>{}<br>'.format(
-                html.escape(name), "".join(html_projects)
+                html.escape(name), "".join(html_assignments)
             )
         )
 
-    alignment = "left" if app_config.get("project_alignment") == "靠左" else "right"
+    alignment = "left" if app_config.get("assignment_alignment") == "靠左" else "right"
     content = "".join(html_sections) if html_sections else "（今天没有作业）"
     return '<div style="text-align: {}">{}</div>'.format(alignment, content)
 
@@ -217,9 +217,9 @@ def _render_push_content(settings, person, sections, app_config):
     for name, assignments in sections:
         lines.append(name + "：")
         for assignment in assignments:
-            prefix = "" if assignment.get("ignore_prefix", False) else app_config.get("project_prefix", "")
-            suffix = "" if assignment.get("ignore_suffix", False) else app_config.get("project_suffix", "")
-            text = "{}{}{}".format(prefix, assignment["project"], suffix)
+            prefix = "" if assignment.get("ignore_prefix", False) else app_config.get("assignment_prefix", "")
+            suffix = "" if assignment.get("ignore_suffix", False) else app_config.get("assignment_suffix", "")
+            text = "{}{}{}".format(prefix, assignment["assignment"], suffix)
             lines.append("  " + text)
         lines.append("")
 
@@ -231,7 +231,7 @@ def _render_push_content(settings, person, sections, app_config):
         "%t%": str(person.get("salutation", "")),
         "%s%": str(app_config.get("school", "")),
         "%c%": str(app_config.get("class", "")),
-        "%hw%": "\n".join(lines) if lines else "（今天没有作业）",
+        "%asg%": "\n".join(lines) if lines else "（今天没有作业）",
     }
     title = str(settings.get("title_template", DEFAULTS["title_template"]))
     body_template = str(settings.get("body_template", DEFAULTS["body_template"]))
@@ -242,10 +242,10 @@ def _render_push_content(settings, person, sections, app_config):
     for token, value in replacements.items():
         title = title.replace(token, value)
         body = body.replace(token, value)
-        if token != "%hw%":
+        if token != "%asg%":
             safe_body = safe_body.replace(token, html.escape(str(value)))
-    hw_html = _render_homework_html(sections, app_config)
-    safe_body = safe_body.replace("%hw%", hw_html)
+    asg_html = _render_assignment_html(sections, app_config)
+    safe_body = safe_body.replace("%asg%", asg_html)
     html_body = (
         "<div style=\"font-family:Arial,'Microsoft YaHei',sans-serif;"
         "line-height:1.65;white-space:pre-wrap\">{}</div>".format(safe_body)
@@ -262,7 +262,7 @@ def send_push(settings, directory=APP_DIR, recipients=None):
     targets = [person for person in targets if person.get("enabled", True) is not False]
     if not targets:
         raise ValueError("没有可发送的订阅账户。")
-    sections = homework_text(directory)
+    sections = assignment_text(directory)
     app_config = load_config(data_directory(directory) / "config.json")
     for person in targets:
         msg = EmailMessage()
@@ -354,7 +354,7 @@ def maybe_send_scheduled(directory=APP_DIR, now=None):
 
 
 def _show_scheduled_push_notification(directory):
-    """Display the same success Toast used by the push manager UI."""
+    """display the same success Toast used by the push manager UI."""
     try:
         from winotify import Notification
 

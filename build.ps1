@@ -12,7 +12,7 @@ $ErrorActionPreference = "Stop"
 $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $OutputDir = Join-Path $ProjectDir $OutputDirectory
 $BuildDir = Join-Path $ProjectDir "build"
-$TkRuntimeDir = Join-Path $BuildDir "tk-runtime"
+$TkruntimeDir = Join-Path $BuildDir "tk-runtime"
 $LicenseBundleDir = Join-Path $BuildDir "distribution-licenses"
 $PythonCommand = Get-Command python -ErrorAction SilentlyContinue
 
@@ -46,19 +46,19 @@ if (-not $TclZip -or -not $TkZip) {
 }
 
 Write-Host "Preparing Tcl/Tk runtime resources..."
-Remove-Item $TkRuntimeDir -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item $TkruntimeDir -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path `
-    (Join-Path $TkRuntimeDir "tcl-temp"), `
-    (Join-Path $TkRuntimeDir "tk-temp"), `
-    (Join-Path $TkRuntimeDir "_tcl_data"), `
-    (Join-Path $TkRuntimeDir "_tk_data") | Out-Null
+    (Join-Path $TkruntimeDir "tcl-temp"), `
+    (Join-Path $TkruntimeDir "tk-temp"), `
+    (Join-Path $TkruntimeDir "_tcl_data"), `
+    (Join-Path $TkruntimeDir "_tk_data") | Out-Null
 
-Expand-Archive -LiteralPath $TclZip.FullName -DestinationPath (Join-Path $TkRuntimeDir "tcl-temp")
-Expand-Archive -LiteralPath $TkZip.FullName -DestinationPath (Join-Path $TkRuntimeDir "tk-temp")
-Copy-Item (Join-Path $TkRuntimeDir "tcl-temp\tcl_library\*") `
-    (Join-Path $TkRuntimeDir "_tcl_data") -Recurse -Force
-Copy-Item (Join-Path $TkRuntimeDir "tk-temp\tk_library\*") `
-    (Join-Path $TkRuntimeDir "_tk_data") -Recurse -Force
+Expand-Archive -LiteralPath $TclZip.FullName -DestinationPath (Join-Path $TkruntimeDir "tcl-temp")
+Expand-Archive -LiteralPath $TkZip.FullName -DestinationPath (Join-Path $TkruntimeDir "tk-temp")
+Copy-Item (Join-Path $TkruntimeDir "tcl-temp\tcl_library\*") `
+    (Join-Path $TkruntimeDir "_tcl_data") -Recurse -Force
+Copy-Item (Join-Path $TkruntimeDir "tk-temp\tk_library\*") `
+    (Join-Path $TkruntimeDir "_tk_data") -Recurse -Force
 
 Remove-Item $LicenseBundleDir -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path `
@@ -71,13 +71,13 @@ Copy-Item (Join-Path $ProjectDir "THIRD_PARTY_NOTICES.md") $LicenseBundleDir -Fo
 Copy-Item (Join-Path $ProjectDir "third_party_licenses\*") (Join-Path $LicenseBundleDir "third_party_licenses") -Force
 $PythonLicense = Join-Path $PythonRoot "LICENSE.txt"
 if (Test-Path $PythonLicense) { Copy-Item $PythonLicense (Join-Path $LicenseBundleDir "python-LICENSE.txt") -Force }
-foreach ($RuntimeLicense in @(
-    @{ Source = (Join-Path $TkRuntimeDir "_tcl_data"); Destination = (Join-Path $LicenseBundleDir "tcl") },
-    @{ Source = (Join-Path $TkRuntimeDir "_tk_data"); Destination = (Join-Path $LicenseBundleDir "tk") }
+foreach ($runtimeLicense in @(
+    @{ Source = (Join-Path $TkruntimeDir "_tcl_data"); Destination = (Join-Path $LicenseBundleDir "tcl") },
+    @{ Source = (Join-Path $TkruntimeDir "_tk_data"); Destination = (Join-Path $LicenseBundleDir "tk") }
 )) {
-    Get-ChildItem -LiteralPath $RuntimeLicense.Source -File -Recurse |
+    Get-ChildItem -LiteralPath $runtimeLicense.Source -File -Recurse |
         Where-Object { $_.Name -match '^license\.terms$' } |
-        ForEach-Object { Copy-Item $_.FullName $RuntimeLicense.Destination -Force }
+        ForEach-Object { Copy-Item $_.FullName $runtimeLicense.Destination -Force }
 }
 
 Write-Host "Cleaning the old output directory..."
@@ -88,17 +88,20 @@ $PyInstallerArguments = @(
     "--clean",
     "--onedir",
     "--windowed",
-    "--icon", (Join-Path $ProjectDir "hwm.ico"),
-    "--add-data", "$(Join-Path $ProjectDir 'hwm.ico');.",
-    "--add-data", "$(Join-Path $TkRuntimeDir '_tcl_data');_tcl_data",
-    "--add-data", "$(Join-Path $TkRuntimeDir '_tk_data');_tk_data",
+    "--icon", (Join-Path $ProjectDir "icon.ico"),
+    "--add-data", "$(Join-Path $ProjectDir 'icon.ico');.",
+    "--add-data", "$(Join-Path $TkruntimeDir '_tcl_data');_tcl_data",
+    "--add-data", "$(Join-Path $TkruntimeDir '_tk_data');_tk_data",
     "--add-data", "$LicenseBundleDir;distribution-licenses",
-    "--hidden-import", "HomeworkDisplay",
-    "--hidden-import", "HomeworkEditor",
-    "--hidden-import", "HWMConfigEditor",
-    "--hidden-import", "HWMSubscriptionManager",
-    "--hidden-import", "HWMAppIdentity",
-    "--hidden-import", "HWMProjectPreview",
+    "--hidden-import", "display",
+    "--hidden-import", "editor",
+    "--hidden-import", "dashboard",
+    "--hidden-import", "subscriptionManager",
+    "--hidden-import", "appIdentity",
+    "--hidden-import", "preview",
+    "--hidden-import", "subscriptionService",
+    "--hidden-import", "config",
+    "--hidden-import", "runtime",
     "--hidden-import", "pystray",
     "--hidden-import", "winotify",
     "--name", "Homework Manager",
@@ -126,16 +129,60 @@ if ($PyInstallerExitCode -ne 0) {
     throw "PyInstaller failed. See: $BuildLog"
 }
 
-$Executable = Join-Path $OutputDir "Homework Manager.exe"
+$MainAppDir = Join-Path $OutputDir "Homework Manager"
+$Executable = Join-Path $MainAppDir "Homework Manager.exe"
 if (-not (Test-Path $Executable)) {
     throw "Build completed but the executable was not found: $Executable"
 }
 
+# --- Uninstaller (onefile, alongside the main executable) ---
+$UninstallerWorkDir = Join-Path $BuildDir "uninstall-onefile"
+Remove-Item $UninstallerWorkDir -Recurse -Force -ErrorAction SilentlyContinue
+
+$UninstallerArguments = @(
+    "--noconfirm",
+    "--clean",
+    "--onefile",
+    "--windowed",
+    "--icon", (Join-Path $ProjectDir "icon.ico"),
+    "--add-data", "$(Join-Path $ProjectDir 'icon.ico');.",
+    "--add-data", "$(Join-Path $TkruntimeDir '_tcl_data');_tcl_data",
+    "--add-data", "$(Join-Path $TkruntimeDir '_tk_data');_tk_data",
+    "--name", "Uninstall",
+    "--distpath", $MainAppDir,
+    "--workpath", $UninstallerWorkDir,
+    "--specpath", $BuildDir,
+    (Join-Path $ProjectDir "uninstall.py")
+)
+
+Write-Host "Building Uninstall.exe (onefile)..."
+$PreviousErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+& $PythonCommand.Source -m PyInstaller @UninstallerArguments 2>&1 |
+    ForEach-Object {
+        if ($_ -is [System.Management.Automation.ErrorRecord]) {
+            $_.ToString()
+        } else {
+            $_
+        }
+    } | Tee-Object -FilePath $BuildLog -Append
+$PyInstallerExitCode = $LASTEXITCODE
+$ErrorActionPreference = $PreviousErrorActionPreference
+if ($PyInstallerExitCode -ne 0) {
+    throw "Uninstaller build failed. See: $BuildLog"
+}
+
+$Uninstaller = Join-Path $MainAppDir "Uninstall.exe"
+if (-not (Test-Path $Uninstaller)) {
+    throw "Uninstaller build completed but Uninstall.exe was not found: $Uninstaller"
+}
+
 Set-Content (Join-Path $OutputDir "build-version.txt") -Value (
-    "Built: {0}`nSource: {1}`nExecutable: {2}" -f (Get-Date -Format o), $ProjectDir, $Executable
+    "Built: {0}`nSource: {1}`nExecutable: {2}`nUninstaller: {3}" -f (Get-Date -Format o), $ProjectDir, $Executable, $Uninstaller
 ) -Encoding UTF8
 
 Write-Host ""
 Write-Host "Build completed: $Executable" -ForegroundColor Green
-Write-Host "Config file: $(Join-Path $OutputDir 'config.json')"
-Write-Host "Homework file: $(Join-Path $OutputDir 'homework.json')"
+Write-Host "Uninstaller: $Uninstaller" -ForegroundColor Green
+Write-Host "Config file: $(Join-Path (Join-Path $OutputDir 'Homework Manager\data') 'config.json')"
+Write-Host "Assignment file: $(Join-Path (Join-Path $OutputDir 'Homework Manager\data') 'assignment.json')"
