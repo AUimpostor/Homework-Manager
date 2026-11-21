@@ -33,7 +33,17 @@ from runtime import (
 	wait_for_shutdown,
 	set_window_icon,
 )
-from config import DEFAULT_CONFIG, data_directory, load_config, load_assignment_data
+from config import (
+    DEFAULT_CONFIG,
+    DISPLAY_ANIMATION_DEFAULTS,
+    DISPLAY_ANIMATION_REGISTRY,
+    TITLE_THEME_DEFAULTS,
+    data_directory,
+    load_config,
+    load_assignment_data,
+    load_display_animation_params,
+    load_title_theme_params,
+)
 
 
 APPLICATION_DIR = (
@@ -120,6 +130,21 @@ def format_assignment(work_list):
 def load_document():
 	config = load_config(CONFIG_FILE)
 	data = load_assignment_data(ASSIGNMENT_FILE, CONFIG_FILE)
+	animation_name = config.get("display_animation", DEFAULT_CONFIG["display_animation"])
+	animation_defaults = DISPLAY_ANIMATION_DEFAULTS.get(
+		animation_name
+	) or next(iter(DISPLAY_ANIMATION_DEFAULTS.values()))
+	config.update(load_display_animation_params(APPLICATION_DIR, animation_name))
+	theme_name = config.get("title_theme", DEFAULT_CONFIG["title_theme"])
+	theme_defaults = TITLE_THEME_DEFAULTS.get(
+		theme_name
+	) or next(iter(TITLE_THEME_DEFAULTS.values()))
+	config.update(load_title_theme_params(APPLICATION_DIR, theme_name))
+	defaults = dict(DEFAULT_CONFIG)
+	defaults.update(animation_defaults)
+	defaults.update(theme_defaults)
+	for spec in DISPLAY_ANIMATION_REGISTRY.values():
+		defaults.update(spec["defaults"])
 
 	for key in (
 		"title_width_permill", "title_length_permill", "title_font_size", "assignment_font_size", "secondary_assignment_font_size",
@@ -128,16 +153,38 @@ def load_document():
 		"display_range_bottom_percent", "content_padding_x_permill", "content_padding_y_permill",
 		"section_spacing_permill", "scroll_start_delay", "scroll_step_interval",
 		"scroll_end_pause", "restart_pause", "fade_interval",
+		"seamless_start_delay", "seamless_step_interval",
+		"seamless_step_size",
 	):
 		try:
 			config[key] = max(1, int(config[key]))
 		except (TypeError, ValueError, KeyError):
-			config[key] = DEFAULT_CONFIG[key]
-	for key in ("scroll_step_size", "fade_step"):
-		try:
-			config[key] = float(config[key])
-		except (TypeError, ValueError, KeyError):
-			config[key] = DEFAULT_CONFIG[key]
+			config[key] = defaults[key]
+	try:
+		config["seamless_loop_pause"] = max(0, int(config["seamless_loop_pause"]))
+	except (TypeError, ValueError, KeyError):
+		config["seamless_loop_pause"] = defaults["seamless_loop_pause"]
+	try:
+		config["seamless_loop_gap_permill"] = min(
+			1000,
+			max(0, int(config["seamless_loop_gap_permill"])),
+		)
+	except (TypeError, ValueError, KeyError):
+		config["seamless_loop_gap_permill"] = defaults["seamless_loop_gap_permill"]
+	try:
+		scroll_step_size = float(config["scroll_step_size"])
+		if 0 < scroll_step_size < 1:
+			scroll_step_size *= 1000
+		config["scroll_step_size"] = min(1000, max(1, int(round(scroll_step_size))))
+	except (TypeError, ValueError, KeyError):
+		config["scroll_step_size"] = defaults["scroll_step_size"]
+	try:
+		fade_step = float(config["fade_step"])
+		if 0 < fade_step < 1:
+			fade_step *= 100
+		config["fade_step"] = min(100, max(1, int(round(fade_step))))
+	except (TypeError, ValueError, KeyError):
+		config["fade_step"] = defaults["fade_step"]
 	for key in ("display_range_left_percent", "display_range_right_percent", "display_range_top_percent", "display_range_bottom_percent"):
 		config[key] = min(100, config[key])
 	for key in (
@@ -147,7 +194,7 @@ def load_document():
 		try:
 			config[key] = max(1, min(1000, int(config[key])))
 		except (TypeError, ValueError, KeyError):
-			config[key] = DEFAULT_CONFIG[key]
+			config[key] = defaults[key]
 	if config["display_range_right_percent"] <= config["display_range_left_percent"]:
 		config["display_range_left_percent"] = DEFAULT_CONFIG["display_range_left_percent"]
 		config["display_range_right_percent"] = DEFAULT_CONFIG["display_range_right_percent"]
@@ -155,8 +202,6 @@ def load_document():
 		config["display_range_top_percent"] = DEFAULT_CONFIG["display_range_top_percent"]
 		config["display_range_bottom_percent"] = DEFAULT_CONFIG["display_range_bottom_percent"]
 	config["window_alpha"] = min(1.0, max(0.1, float(config.get("window_alpha", DEFAULT_CONFIG["window_alpha"]))))
-	config["scroll_step_size"] = min(1.0, max(0.0001, config["scroll_step_size"]))
-	config["fade_step"] = min(1.0, max(0.01, config["fade_step"]))
 	for key in ("assignment_prefix", "assignment_suffix"):
 		if not isinstance(config.get(key), str):
 			config[key] = DEFAULT_CONFIG[key]
@@ -165,7 +210,7 @@ def load_document():
 			config[key] = DEFAULT_CONFIG[key]
 	for key in ("title_font_color", "assignment_font_color", "secondary_assignment_font_color", "title_primary_color", "title_secondary_color"):
 		if not isinstance(config.get(key), str) or not config[key].strip():
-			config[key] = DEFAULT_CONFIG[key]
+			config[key] = defaults[key]
 
 	return config, format_assignment(data)
 
@@ -251,81 +296,105 @@ def main():
 			pady=permill_y(config["content_padding_y_permill"]),
 		)
 
+	original_content = None
+	duplicate_content = None
+
 	def render_assignment():
-		nonlocal config
+		nonlocal config, original_content, duplicate_content
 		config, sections = load_document()
 		apply_window_config()
 		for child in content.winfo_children():
 			child.destroy()
+		original_content = None
+		duplicate_content = None
 
-		for subject_name, assignments in sections:
-			section = tk.Frame(content, background=transparent_color)
-			section.pack(fill="x", anchor="e", pady=(0, permill_y(config["section_spacing_permill"])))
+		def render_sections(target):
+			for subject_name, assignments in sections:
+				section = tk.Frame(target, background=transparent_color)
+				section.pack(fill="x", anchor="e", pady=(0, permill_y(config["section_spacing_permill"])))
 
-			header_font = tkfont.Font(
-				family="Microsoft YaHei UI", size=config["title_font_size"], weight="bold"
-			)
-			header_text = "{}".format(subject_name)
-			header_height = permill_y(config["title_length_permill"])
-			main_width = permill_x(config["title_width_permill"])
-			theme = config.get("title_theme", "basic_color_block")
-			guide_line_width = permill_x(config.get("title_guide_line_width_permill", 10))
-			secondary_width = guide_line_width
-			canvas_width = main_width + secondary_width
-			header = tk.Canvas(
-				section,
-				width=canvas_width + 5,
-				height=header_height + 4,
-				highlightthickness=0,
-				background=transparent_color,
-			)
-			primary = config["title_primary_color"]
-			secondary = config["title_secondary_color"]
-			opacity = max(0, min(100, int(config.get("title_outline_opacity", 25)))) / 100.0
-			def outline_color(color):
-				if opacity <= 0:
-					return transparent_color
-				try:
-					foreground = tuple(int(color[index:index + 2], 16) for index in (1, 3, 5))
-					background = tuple(int(transparent_color[index:index + 2], 16) for index in (1, 3, 5))
-					return "#" + "".join(
-						"{:02X}".format(round(bg + (fg - bg) * opacity))
-						for fg, bg in zip(foreground, background)
-					)
-				except (ValueError, TypeError, IndexError):
-					return color
-			primary_outline = outline_color(primary)
-			secondary_outline = outline_color(secondary)
-			header.create_rectangle(0, 0, main_width, header_height, fill=primary, outline=primary_outline)
-			header.create_rectangle(main_width, 0, main_width + secondary_width, header_height, fill=secondary, outline=secondary_outline)
-			title_is_left = config["title_alignment"] == "靠左"
-			assignment_is_left = config["assignment_alignment"] == "靠左"
-			header.create_text(
-				10 if title_is_left else main_width - 10,
-				header_height // 2,
-				text=header_text,
-				anchor="w" if title_is_left else "e",
-				font=header_font,
-				fill=config["title_font_color"],
-			)
-			header.pack(anchor="w" if title_is_left else "e")
-
-			for assignment in assignments:
-				is_secondary = assignment.get("secondary", False)
-				label = tk.Label(
+				header_font = tkfont.Font(
+					family="Microsoft YaHei UI", size=config["title_font_size"], weight="bold"
+				)
+				header_text = "{}".format(subject_name)
+				header_height = permill_y(config["title_length_permill"])
+				main_width = permill_x(config["title_width_permill"])
+				guide_line_width = permill_x(config.get("title_guide_line_width_permill", 10))
+				secondary_width = guide_line_width
+				canvas_width = main_width + secondary_width
+				header = tk.Canvas(
 					section,
-					text="{}{}{}".format(
-						"" if assignment.get("ignore_prefix", False) else config["assignment_prefix"],
-						assignment["assignment"],
-						"" if assignment.get("ignore_suffix", False) else config["assignment_suffix"],
-					),
-					anchor="w" if assignment_is_left else "e",
-					justify="left" if assignment_is_left else "right",
-					font=("Microsoft YaHei UI", config["secondary_assignment_font_size"] if is_secondary else config["assignment_font_size"]),
-					foreground=config["secondary_assignment_font_color"] if is_secondary else config["assignment_font_color"],
+					width=canvas_width + 5,
+					height=header_height + 4,
+					highlightthickness=0,
 					background=transparent_color,
 				)
-				label.pack(anchor="w" if assignment_is_left else "e", pady=(4, 0))
+				primary = config["title_primary_color"]
+				secondary = config["title_secondary_color"]
+				opacity = max(0, min(100, int(config.get("title_outline_opacity", 25)))) / 100.0
+
+				def outline_color(color):
+					if opacity <= 0:
+						return transparent_color
+					try:
+						foreground = tuple(int(color[index:index + 2], 16) for index in (1, 3, 5))
+						background = tuple(int(transparent_color[index:index + 2], 16) for index in (1, 3, 5))
+						return "#" + "".join(
+							"{:02X}".format(round(bg + (fg - bg) * opacity))
+							for fg, bg in zip(foreground, background)
+						)
+					except (ValueError, TypeError, IndexError):
+						return color
+
+				primary_outline = outline_color(primary)
+				secondary_outline = outline_color(secondary)
+				header.create_rectangle(0, 0, main_width, header_height, fill=primary, outline=primary_outline)
+				header.create_rectangle(main_width, 0, main_width + secondary_width, header_height, fill=secondary, outline=secondary_outline)
+				title_is_left = config["title_alignment"] == "靠左"
+				assignment_is_left = config["assignment_alignment"] == "靠左"
+				header.create_text(
+					10 if title_is_left else main_width - 10,
+					header_height // 2,
+					text=header_text,
+					anchor="w" if title_is_left else "e",
+					font=header_font,
+					fill=config["title_font_color"],
+				)
+				header.pack(anchor="w" if title_is_left else "e")
+
+				for assignment in assignments:
+					is_secondary = assignment.get("secondary", False)
+					label = tk.Label(
+						section,
+						text="{}{}{}".format(
+							"" if assignment.get("ignore_prefix", False) else config["assignment_prefix"],
+							assignment["assignment"],
+							"" if assignment.get("ignore_suffix", False) else config["assignment_suffix"],
+						),
+						anchor="w" if assignment_is_left else "e",
+						justify="left" if assignment_is_left else "right",
+						font=("Microsoft YaHei UI", config["secondary_assignment_font_size"] if is_secondary else config["assignment_font_size"]),
+						foreground=config["secondary_assignment_font_color"] if is_secondary else config["assignment_font_color"],
+						background=transparent_color,
+					)
+					label.pack(anchor="w" if assignment_is_left else "e", pady=(4, 0))
+
+		animation_name = config.get("display_animation", DEFAULT_CONFIG["display_animation"])
+		if animation_name == "seamless_scroll":
+			original_content = tk.Frame(content, background=transparent_color)
+			original_content.pack(fill="x", anchor="n")
+			render_sections(original_content)
+			duplicate_content = tk.Frame(content, background=transparent_color)
+			loop_gap_height = permill_y(config["seamless_loop_gap_permill"])
+			duplicate_content.pack(fill="x", anchor="n", pady=(loop_gap_height, 0))
+			render_sections(duplicate_content)
+		else:
+			original_content = tk.Frame(content, background=transparent_color)
+			original_content.pack(fill="x", anchor="n")
+			render_sections(original_content)
+
+		scroll_canvas.update_idletasks()
+		scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all"))
 
 	render_assignment()
 	animation_generation = 0
@@ -343,6 +412,11 @@ def main():
 			except Exception:
 				pass
 		animation_after_ids.clear()
+
+	def get_animation_start_delay():
+		if config.get("display_animation", DEFAULT_CONFIG["display_animation"]) == "seamless_scroll":
+			return config["seamless_start_delay"]
+		return config["scroll_start_delay"]
 
 	def manual_scroll(event):
 		"""Allow wheel and arrow-key scrolling while the pointer is over the display."""
@@ -367,7 +441,7 @@ def main():
 		cancel_animation_jobs()
 		animation_generation += 1
 		scroll_canvas.yview_scroll(steps, "units")
-		schedule_animation(config["scroll_start_delay"], auto_scroll)
+		schedule_animation(get_animation_start_delay(), auto_scroll)
 		return "break"
 
 	touch_drag_y = None
@@ -410,7 +484,7 @@ def main():
 		touch_drag_y = None
 		touch_drag_start_y = None
 		if was_dragged:
-			schedule_animation(config["scroll_start_delay"], auto_scroll)
+			schedule_animation(get_animation_start_delay(), auto_scroll)
 
 	root.bind_all("<ButtonPress-1>", touch_drag_start, add="+")
 	root.bind_all("<B1-Motion>", touch_drag_motion, add="+")
@@ -452,17 +526,19 @@ def main():
 	if shutdown_event is not None:
 		threading.Thread(target=wait_for_shutdown_signal, daemon=True).start()
 
-	def auto_scroll():
+	def run_fade_out(generation):
 		nonlocal animation_generation
-		animation_generation += 1
-		generation = animation_generation
-
 		bounds = scroll_canvas.bbox("all")
 		if not bounds:
 			return
 
 		content_height = bounds[3] - bounds[1]
 		viewport_height = scroll_canvas.winfo_height()
+		scroll_step_pixels = max(
+			1,
+			round(screen_height * config["scroll_step_size"] / 1000),
+		)
+		fade_step = config["fade_step"] / 100.0
 		if viewport_height <= 1:
 			schedule_animation(100, auto_scroll)
 			return
@@ -477,7 +553,9 @@ def main():
 				schedule_animation(config["scroll_end_pause"], scroll_to_top)
 				return
 
-			scroll_canvas.yview_moveto(min(first + config["scroll_step_size"], 1))
+			scroll_canvas.yview_moveto(
+				min(first + scroll_step_pixels / max(1, content_height), 1)
+			)
 			schedule_animation(config["scroll_step_interval"], scroll_step)
 
 		def scroll_to_top():
@@ -486,7 +564,7 @@ def main():
 		def fade_out(alpha=max_alpha):
 			if generation != animation_generation:
 				return
-			alpha -= config["fade_step"]
+			alpha -= fade_step
 			if alpha <= 0:
 				root.attributes("-alpha", 0)
 				scroll_canvas.yview_moveto(0)
@@ -499,7 +577,7 @@ def main():
 		def fade_in(alpha=0):
 			if generation != animation_generation:
 				return
-			alpha += config["fade_step"]
+			alpha += fade_step
 			if alpha >= max_alpha:
 				root.attributes("-alpha", max_alpha)
 				schedule_animation(config["scroll_start_delay"], scroll_step)
@@ -509,6 +587,91 @@ def main():
 			schedule_animation(config["fade_interval"], fade_in, alpha)
 
 		schedule_animation(config["scroll_start_delay"], scroll_step)
+
+	def run_seamless_scroll(generation):
+		scroll_canvas.update_idletasks()
+		bounds = scroll_canvas.bbox("all")
+		if not bounds:
+			return
+
+		viewport_height = scroll_canvas.winfo_height()
+		if viewport_height <= 1:
+			schedule_animation(100, auto_scroll)
+			return
+		if original_content is None:
+			return
+
+		loop_height = original_content.winfo_height()
+		total_height = bounds[3] - bounds[1]
+		if loop_height <= 0 or loop_height <= viewport_height:
+			return
+		if total_height <= loop_height:
+			return
+		if duplicate_content is None:
+			return
+
+		loop_start = duplicate_content.winfo_y()
+		step_size = max(1, int(config["seamless_step_size"]))
+		first, _last = scroll_canvas.yview()
+		position = max(0, min(loop_start, round(first * total_height)))
+
+		def scroll_step():
+			nonlocal position
+			if generation != animation_generation:
+				return
+			next_position = position + step_size
+			if next_position >= loop_start:
+				if config["seamless_loop_pause"] > 0:
+					schedule_animation(
+						config["seamless_loop_pause"],
+						reset_to_start,
+					)
+				else:
+					reset_to_start()
+				return
+
+			position = next_position
+			scroll_canvas.yview_moveto(min(1.0, position / total_height))
+			schedule_animation(
+				config["seamless_step_interval"],
+				scroll_step,
+			)
+
+		def reset_to_start():
+			nonlocal position
+			if generation != animation_generation:
+				return
+			position = 0
+			scroll_canvas.yview_moveto(0)
+			schedule_animation(
+				config["seamless_step_interval"],
+				scroll_step,
+			)
+
+		schedule_animation(
+			config["seamless_start_delay"],
+			scroll_step,
+		)
+
+	ANIMATION_RUNNERS = {
+		"fade-out": run_fade_out,
+		"seamless_scroll": run_seamless_scroll,
+	}
+
+	def auto_scroll():
+		nonlocal animation_generation
+		animation_generation += 1
+		generation = animation_generation
+		root.attributes("-alpha", max_alpha)
+
+		animation_name = config.get(
+			"display_animation",
+			DEFAULT_CONFIG["display_animation"],
+		)
+		runner = ANIMATION_RUNNERS.get(animation_name)
+		if runner is None:
+			runner = run_fade_out
+		runner(generation)
 
 	schedule_animation(100, auto_scroll)
 	def close_display():

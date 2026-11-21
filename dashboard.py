@@ -17,10 +17,12 @@
 
 import json
 import ctypes
+import hashlib
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tkinter as tk
 import threading
 import webbrowser
@@ -46,7 +48,23 @@ from runtime import (
     wait_for_shutdown,
     set_window_icon,
 )
-from config import DEFAULT_CONFIG, data_directory, load_config, load_assignment_data, save_config
+from config import (
+    DEFAULT_CONFIG,
+    DISPLAY_ANIMATION_REGISTRY,
+    BACKUP_EXTENSIONS,
+    backup_directory,
+    data_directory,
+    ensure_backup_layout,
+    load_config,
+    load_assignment_data,
+    next_backup_path,
+    save_config,
+    validate_backup_name,
+    load_display_animation_params,
+    save_display_animation_params,
+    load_title_theme_params,
+    save_title_theme_params,
+)
 
 
 APPLICATION_DIR = (
@@ -56,7 +74,10 @@ APPLICATION_DIR = (
 )
 RESOURCE_DIR = APPLICATION_DIR
 DATA_DIR = data_directory(RESOURCE_DIR)
-BACKUP_DIR = DATA_DIR / "backup"
+CONFIG_BACKUP_DIR = backup_directory(RESOURCE_DIR, "config")
+CUSTOM_BACKUP_DIR = backup_directory(RESOURCE_DIR, "custom")
+ASSIGNMENT_BACKUP_DIR = backup_directory(RESOURCE_DIR, "assignment")
+CUSTOM_DIR = DATA_DIR / "custom"
 CONFIG_FILE = DATA_DIR / "config.json"
 ASSIGNMENT_FILE = DATA_DIR / "assignment.json"
 LICENSE_BUNDLE_DIR = (
@@ -71,24 +92,25 @@ EDITOR_FILE = (
 )
 INTEGER_FIELDS = (
     "title_width_permill", "title_length_permill", "title_font_size", "assignment_font_size", "secondary_assignment_font_size",
-    "title_guide_line_width_permill",
-    "title_outline_opacity",
     "editor_width_percent", "editor_height_percent",
     "display_range_left_percent", "display_range_right_percent", "display_range_top_percent",
     "display_range_bottom_percent", "content_padding_x_permill", "content_padding_y_permill",
-    "section_spacing_permill", "scroll_start_delay", "scroll_step_interval",
-    "scroll_end_pause", "restart_pause", "fade_interval",
+    "section_spacing_permill",
 )
-FLOAT_FIELDS = ("window_alpha", "scroll_step_size", "fade_step")
+FLOAT_FIELDS = ("window_alpha",)
 BOOLEAN_FIELDS = ("auto_start_display",)
 TRAY_CLICK_OPTIONS = {
     "dashboard": "仪表盘",
     "assignment_editor": "作业编辑器",
     "menu": "右键菜单",
 }
-SELECT_FIELDS = ("tray_click_action", "open_action", "title_theme", "title_alignment", "assignment_alignment")
+SELECT_FIELDS = ("tray_click_action", "open_action", "title_theme", "title_alignment", "assignment_alignment", "display_animation")
 TITLE_THEMES = {
     "basic_color_block": "基础色块（默认）",
+}
+DISPLAY_ANIMATIONS = {
+    name: spec["label"]
+    for name, spec in DISPLAY_ANIMATION_REGISTRY.items()
 }
 OPEN_ACTION_OPTIONS = {
     "dashboard": "仪表盘",
@@ -100,10 +122,10 @@ SELECT_OPTIONS = {
     "title_theme": TITLE_THEMES,
     "title_alignment": {"靠左": "靠左", "靠右": "靠右"},
     "assignment_alignment": {"靠左": "靠左", "靠右": "靠右"},
+    "display_animation": DISPLAY_ANIMATIONS,
 }
 COLOR_FIELDS = (
-    "title_font_color", "assignment_font_color", "secondary_assignment_font_color", "title_primary_color",
-    "title_secondary_color",
+    "assignment_font_color", "secondary_assignment_font_color",
 )
 FIELD_LABELS = {
     "title_width_permill": "标题宽度（‰）",
@@ -111,16 +133,11 @@ FIELD_LABELS = {
     "title_font_size": "标题字号（size）",
     "assignment_font_size": "作业字号（size）",
     "secondary_assignment_font_size": "次要作业字号（size）",
-    "title_font_color": "标题字体颜色",
     "assignment_font_color": "作业字体颜色",
     "secondary_assignment_font_color": "次要作业字体颜色",
     "title_theme": "标题主题",
     "title_alignment": "标题排版",
     "assignment_alignment": "作业排版",
-    "title_primary_color": "标题主要颜色",
-    "title_secondary_color": "标题次要颜色",
-    "title_outline_opacity": "描边透明度（%）",
-    "title_guide_line_width_permill": "标题引导线粗（‰）",
     "auto_start_display": "随 Windows 启动",
     "tray_click_action": "点击系统托盘图标时",
     "open_action": "打开 Homework Manager 时",
@@ -138,13 +155,7 @@ FIELD_LABELS = {
     "content_padding_x_permill": "内容水平边距（‰）",
     "content_padding_y_permill": "内容垂直边距（‰）",
     "section_spacing_permill": "科目间距（‰）",
-    "scroll_start_delay": "首次滚动前停顿（ms）",
-    "scroll_step_interval": "滚动间隔（ms）",
-    "scroll_step_size": "每次滚动幅度",
-    "scroll_end_pause": "滚动到末尾停留（ms）",
-    "restart_pause": "回到顶部后停留（ms）",
-    "fade_interval": "淡入淡出间隔（ms）",
-    "fade_step": "淡入淡出步长",
+    "display_animation": "显示动画",
 }
 COLOR_PRESETS = (
     ("浅灰", "#F5F5F5"),
@@ -158,6 +169,19 @@ COLOR_PRESETS = (
     ("浅绿", "#C8F7C5"),
     ("浅粉", "#FFD6E7"),
 )
+ANIMATION_PARAM_FIELDS = {
+    name: spec["parameters"]
+    for name, spec in DISPLAY_ANIMATION_REGISTRY.items()
+}
+TITLE_THEME_PARAM_FIELDS = {
+    "basic_color_block": (
+        ("title_font_color", "标题字体颜色", "color"),
+        ("title_primary_color", "标题主要颜色", "color"),
+        ("title_secondary_color", "标题次要颜色", "color"),
+        ("title_outline_opacity", "描边透明度（%）", "percent"),
+        ("title_guide_line_width_permill", "标题引导线粗（‰）", "permill"),
+    ),
+}
 CONFIG_GROUPS = (
     (
         "首选项",
@@ -177,11 +201,6 @@ CONFIG_GROUPS = (
                     "title_font_size",
                     "title_alignment",
                     "title_theme",
-                    "title_font_color",
-                    "title_primary_color",
-                    "title_secondary_color",
-                    "title_outline_opacity",
-                    "title_guide_line_width_permill",
                 ),
             ),
             (
@@ -229,13 +248,7 @@ CONFIG_GROUPS = (
             (
                 "动画",
                 (
-                    "scroll_start_delay",
-                    "scroll_step_interval",
-                    "scroll_step_size",
-                    "scroll_end_pause",
-                    "restart_pause",
-                    "fade_interval",
-                    "fade_step",
+                    "display_animation",
                 ),
             ),
         ),
@@ -265,11 +278,29 @@ def save_document(config):
 def create_config_backup(extension=".json.bak"):
     if not CONFIG_FILE.is_file():
         return None
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    backup = BACKUP_DIR / "config_{}{}".format(timestamp, extension)
+    ensure_backup_layout(RESOURCE_DIR)
+    backup = next_backup_path(
+        CONFIG_BACKUP_DIR, extension, automatic=True
+    )
     shutil.copy2(CONFIG_FILE, backup)
     return backup
+
+
+def backup_display_name(path):
+    for extension in (".json.bak", ".tar"):
+        if path.name.endswith(extension):
+            return path.name[:-len(extension)]
+    return path.name
+
+
+def backup_creation_time(path):
+    stat = path.stat()
+    created = getattr(stat, "st_birthtime", stat.st_ctime)
+    return datetime.fromtimestamp(created).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def backup_storage_type(path):
+    return "自动" if path.name.startswith("auto_") else "手动"
 
 
 def ensure_config_file_visible():
@@ -285,11 +316,110 @@ def ensure_config_file_visible():
 
 
 def list_config_backups():
+    ensure_backup_layout(RESOURCE_DIR)
     return sorted(
-        (path for path in BACKUP_DIR.glob("config*.json.bak") if path.is_file()),
-        key=lambda path: path.stat().st_mtime,
+        (path for path in CONFIG_BACKUP_DIR.glob("*.json.bak") if path.is_file()),
+        key=lambda path: path.stat().st_ctime,
         reverse=True,
     )
+
+
+def custom_directory_hash():
+    """Return a content hash of the custom directory, or None when empty."""
+    if not CUSTOM_DIR.is_dir():
+        return None
+    files = sorted(path for path in CUSTOM_DIR.rglob("*") if path.is_file())
+    if not files:
+        return None
+    hasher = hashlib.sha256()
+    for path in files:
+        hasher.update(str(path.relative_to(CUSTOM_DIR)).encode("utf-8", "replace"))
+        hasher.update(b"\0")
+        hasher.update(path.read_bytes())
+    return hasher.hexdigest()
+
+
+def create_custom_backup():
+    """Pack the custom directory into a tar, only when its content changed."""
+    ensure_backup_layout(RESOURCE_DIR)
+    current_hash = custom_directory_hash()
+    if current_hash is None:
+        return None
+    state_file = CUSTOM_BACKUP_DIR / ".custom_backup_state.json"
+    last_hash = None
+    try:
+        last_hash = json.loads(state_file.read_text(encoding="utf-8")).get("hash")
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+    if current_hash == last_hash:
+        return None
+    backup = next_backup_path(CUSTOM_BACKUP_DIR, ".tar", automatic=True)
+    with tarfile.open(backup, "w") as tar:
+        for path in sorted(p for p in CUSTOM_DIR.rglob("*") if p.is_file()):
+            tar.add(path, arcname=str(path.relative_to(CUSTOM_DIR)))
+    state_file.write_text(
+        json.dumps({"hash": current_hash}, ensure_ascii=False, indent=4),
+        encoding="utf-8",
+    )
+    return backup
+
+
+def list_custom_backups():
+    ensure_backup_layout(RESOURCE_DIR)
+    return sorted(
+        (path for path in CUSTOM_BACKUP_DIR.glob("*.tar") if path.is_file()),
+        key=lambda path: path.stat().st_ctime,
+        reverse=True,
+    )
+
+
+def list_assignment_backups():
+    ensure_backup_layout(RESOURCE_DIR)
+    return sorted(
+        (path for path in ASSIGNMENT_BACKUP_DIR.glob("*.json.bak") if path.is_file()),
+        key=lambda path: path.stat().st_ctime,
+        reverse=True,
+    )
+
+
+def create_manual_backup(backup_type, name):
+    if backup_type not in BACKUP_EXTENSIONS:
+        raise ValueError("未知备份类型: {}".format(backup_type))
+    name = validate_backup_name(name)
+    ensure_backup_layout(RESOURCE_DIR)
+    extension = BACKUP_EXTENSIONS[backup_type]
+    directory = backup_directory(RESOURCE_DIR, backup_type)
+    backup = next_backup_path(directory, extension, name=name)
+    if backup_type == "config":
+        source = CONFIG_FILE
+        if not source.is_file():
+            raise FileNotFoundError(str(source))
+        shutil.copy2(source, backup)
+    elif backup_type == "assignment":
+        source = ASSIGNMENT_FILE
+        if not source.is_file():
+            raise FileNotFoundError(str(source))
+        shutil.copy2(source, backup)
+    elif backup_type == "custom":
+        with tarfile.open(backup, "w") as tar:
+            if CUSTOM_DIR.is_dir():
+                for path in sorted(item for item in CUSTOM_DIR.rglob("*") if item.is_file()):
+                    tar.add(path, arcname=str(path.relative_to(CUSTOM_DIR)))
+    else:
+        raise ValueError("未知备份类型: {}".format(backup_type))
+    return backup
+
+
+def restore_custom_backup(path):
+    """Extract a custom backup tar back into the custom directory."""
+    CUSTOM_DIR.mkdir(parents=True, exist_ok=True)
+    root_resolved = CUSTOM_DIR.resolve()
+    with tarfile.open(path, "r") as tar:
+        for member in tar.getmembers():
+            target = (CUSTOM_DIR / member.name).resolve()
+            if target != root_resolved and root_resolved not in target.parents:
+                raise ValueError("备份包含非法路径，已取消恢复")
+        tar.extractall(CUSTOM_DIR)
 
 
 def get_display_startup_command():
@@ -328,7 +458,7 @@ def update_display_startup(enabled):
 
 
 class configeditor:
-    def __init__(self, root):
+    def __init__(self, root, initial_backup_type=None):
         self.root = root
         enable_touch_keyboard(root)
         set_window_icon(root, __file__)
@@ -346,7 +476,10 @@ class configeditor:
         self.preview_menu.add_command(label="预览作业", command=self.open_assignment_preview)
         self.color_previews = {}
         self.color_selectors = {}
-        self.guide_width_widgets = []
+        self.animation_params = {}
+        self.title_theme_params = {}
+        self.backup_manager_dialog = None
+        self.create_backup_dialog = None
         self.status = tk.StringVar(value="就绪")
         self._dirty = False
         self._loading = False
@@ -360,6 +493,8 @@ class configeditor:
         if self.shutdown_event is not None:
             threading.Thread(target=self.wait_for_shutdown_signal, daemon=True).start()
         self.root.protocol("WM_DELETE_WINDOW", self.close)
+        if initial_backup_type:
+            self.root.after_idle(lambda: self.rollback_config(initial_backup_type))
 
     def close(self):
         close_config_reload_event(self.reload_event)
@@ -479,15 +614,34 @@ class configeditor:
                             offvalue="False",
                         ).grid(row=row, column=1, sticky="w", pady=5)
                     elif key in SELECT_FIELDS:
-                        selector = ttk.Combobox(
-                            main,
-                            state="readonly",
-                            textvariable=variable,
-                            values=list(SELECT_OPTIONS[key].values()),
-                        )
-                        selector.grid(row=row, column=1, sticky="ew", pady=5)
-                        if key == "title_theme":
-                            selector.bind("<<ComboboxSelected>>", self.apply_title_theme)
+                        if key in ("display_animation", "title_theme"):
+                            selector_frame = ttk.Frame(main)
+                            selector_frame.grid(row=row, column=1, sticky="ew", pady=5)
+                            selector_frame.columnconfigure(0, weight=1)
+                            selector = ttk.Combobox(
+                                selector_frame,
+                                state="readonly",
+                                textvariable=variable,
+                                values=list(SELECT_OPTIONS[key].values()),
+                            )
+                            selector.grid(row=0, column=0, sticky="ew")
+                            ttk.Button(
+                                selector_frame,
+                                text="动画参数" if key == "display_animation" else "主题参数",
+                                command=(
+                                    self.open_animation_params
+                                    if key == "display_animation"
+                                    else self.open_title_theme_params
+                                ),
+                            ).grid(row=0, column=1, padx=(6, 0))
+                        else:
+                            selector = ttk.Combobox(
+                                main,
+                                state="readonly",
+                                textvariable=variable,
+                                values=list(SELECT_OPTIONS[key].values()),
+                            )
+                            selector.grid(row=row, column=1, sticky="ew", pady=5)
                     elif key in COLOR_FIELDS:
                         color_frame = ttk.Frame(main)
                         color_frame.grid(row=row, column=1, sticky="ew", pady=5)
@@ -516,9 +670,6 @@ class configeditor:
                         entry.grid(
                             row=row, column=1, sticky="ew", pady=5
                         )
-                    if key == "title_guide_line_width_permill":
-                        label_widget = main.grid_slaves(row=row, column=0)[0]
-                        self.guide_width_widgets = [label_widget, entry]
                     row += 1
 
         ttk.Separator(main, orient="horizontal").grid(
@@ -552,7 +703,7 @@ class configeditor:
             "<Button-1>",
             lambda _event: webbrowser.open("https://github.com/AUimpostor/Homework-Manager"),
         )
-        ttk.Label(about_title, text=" v1.6 Beta 2").pack(side="left")
+        ttk.Label(about_title, text=" v1.6 Beta 3").pack(side="left")
         row += 1
         ttk.Label(
             main,
@@ -684,31 +835,11 @@ class configeditor:
                 self.variables[key].set(str(value))
             for key in COLOR_FIELDS:
                 self.update_color_preview(key)
-            self.update_guide_width_visibility()
         finally:
             self._loading = False
         self._dirty = False
         if self.save_button is not None:
             self.save_button.configure(state="disabled")
-
-    def apply_title_theme(self, _event=None):
-        self.update_guide_width_visibility()
-
-    def update_guide_width_visibility(self):
-        if not self.guide_width_widgets:
-            return
-        label, entry = self.guide_width_widgets
-        selected_label = self.variables["title_theme"].get()
-        selected_value = next(
-            (value for value, label in SELECT_OPTIONS["title_theme"].items() if label == selected_label),
-            DEFAULT_CONFIG["title_theme"],
-        )
-        if selected_value == "basic_color_block":
-            label.grid()
-            entry.grid()
-        else:
-            label.grid_remove()
-            entry.grid_remove()
 
     def update_color_preview(self, key):
         color = self.variables[key].get()
@@ -738,6 +869,213 @@ class configeditor:
             self.variables[key].set(color.upper())
             self.update_color_preview(key)
 
+    def open_animation_params(self):
+        label = self.variables["display_animation"].get()
+        name = next(
+            (value for value, display in DISPLAY_ANIMATIONS.items() if display == label),
+            DEFAULT_CONFIG["display_animation"],
+        )
+        fields = ANIMATION_PARAM_FIELDS.get(name)
+        if not fields:
+            messagebox.showinfo("动画参数", "该动画没有可调整的参数。", parent=self.root)
+            return
+        if name in self.animation_params:
+            params = dict(self.animation_params[name])
+        else:
+            params = load_display_animation_params(APPLICATION_DIR, name)
+
+        dialog = tk.Toplevel(self.root)
+        set_window_icon(dialog, __file__)
+        dialog.title("动画参数 - {}".format(DISPLAY_ANIMATIONS.get(name, name)))
+        dialog.transient(self.root)
+        dialog.grab_set()
+        configure_tk_scaling(dialog)
+        dialog.columnconfigure(1, weight=1)
+
+        labels = {key: field_label for key, field_label, _kind in fields}
+        entries = {}
+        for row, (key, field_label, kind) in enumerate(fields):
+            ttk.Label(dialog, text=field_label).grid(
+                row=row, column=0, sticky="w", padx=10, pady=5
+            )
+            variable = tk.StringVar(value=str(params.get(key, "")))
+            entries[key] = (variable, kind)
+            ttk.Entry(dialog, textvariable=variable).grid(
+                row=row, column=1, sticky="ew", padx=(0, 10), pady=5
+            )
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=len(fields), column=0, columnspan=2, sticky="e", padx=10, pady=(10, 10))
+
+        def commit():
+            new_params = {}
+            for key, (variable, kind) in entries.items():
+                text = variable.get().strip()
+                try:
+                    if kind in ("int", "positive_int", "nonnegative_int"):
+                        value = int(text)
+                        if kind in ("int", "positive_int") and value < 1:
+                            raise ValueError("{} 必须大于 0".format(labels[key]))
+                        if kind == "nonnegative_int" and value < 0:
+                            raise ValueError("{} 必须大于或等于 0".format(labels[key]))
+                    elif kind == "permill":
+                        value = int(text)
+                        if not 0 <= value <= 1000:
+                            raise ValueError("{} 必须在 0 到 1000 之间".format(labels[key]))
+                    elif kind == "percent":
+                        value = int(text)
+                        if not 1 <= value <= 100:
+                            raise ValueError("{} 必须在 1 到 100 之间".format(labels[key]))
+                    else:
+                        value = float(text)
+                        if not 0 < value <= 1:
+                            raise ValueError("{} 必须大于 0 且不超过 1".format(labels[key]))
+                except ValueError as error:
+                    messagebox.showerror("参数无效", str(error), parent=dialog)
+                    return
+                new_params[key] = value
+            self.animation_params[name] = new_params
+            self._mark_dirty()
+            dialog.destroy()
+
+        ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side="right")
+        ttk.Button(buttons, text="确定", command=commit).pack(side="right", padx=(0, 8))
+        place_window_bottom_right(dialog)
+
+    def open_title_theme_params(self):
+        label = self.variables["title_theme"].get()
+        name = next(
+            (value for value, display in TITLE_THEMES.items() if display == label),
+            DEFAULT_CONFIG["title_theme"],
+        )
+        fields = TITLE_THEME_PARAM_FIELDS.get(name)
+        if not fields:
+            messagebox.showinfo("主题参数", "该主题没有可调整的参数。", parent=self.root)
+            return
+        if name in self.title_theme_params:
+            params = dict(self.title_theme_params[name])
+        else:
+            params = load_title_theme_params(APPLICATION_DIR, name)
+
+        dialog = tk.Toplevel(self.root)
+        set_window_icon(dialog, __file__)
+        dialog.title("主题参数 - {}".format(TITLE_THEMES.get(name, name)))
+        dialog.transient(self.root)
+        dialog.grab_set()
+        configure_tk_scaling(dialog)
+        dialog.columnconfigure(1, weight=1)
+
+        labels = {key: field_label for key, field_label, _kind in fields}
+        entries = {}
+        for row, (key, field_label, kind) in enumerate(fields):
+            ttk.Label(dialog, text=field_label).grid(
+                row=row, column=0, sticky="w", padx=10, pady=5
+            )
+            variable = tk.StringVar(value=str(params.get(key, "")))
+            entries[key] = (variable, kind)
+            if kind != "color":
+                ttk.Entry(dialog, textvariable=variable).grid(
+                    row=row, column=1, sticky="ew", padx=(0, 10), pady=5
+                )
+                continue
+            color_frame = ttk.Frame(dialog)
+            color_frame.grid(row=row, column=1, sticky="ew", padx=(0, 10), pady=5)
+            color_frame.columnconfigure(1, weight=1)
+            color_preview = tk.Label(color_frame, width=3, relief="sunken")
+            color_preview.grid(row=0, column=0, padx=(0, 6))
+            color_selector = ttk.Combobox(
+                color_frame,
+                state="readonly",
+                values=[preset for preset, _color in COLOR_PRESETS],
+            )
+            color_selector.grid(row=0, column=1, sticky="ew")
+
+            def sync_preview(
+                *_args, preview=color_preview, selector=color_selector, source=variable
+            ):
+                color = source.get()
+                try:
+                    preview.configure(background=color)
+                except tk.TclError:
+                    preview.configure(background="#FFFFFF")
+                for index, (_preset, preset_color) in enumerate(COLOR_PRESETS):
+                    if color.upper() == preset_color.upper():
+                        selector.current(index)
+                        return
+                selector.set("自定义颜色")
+
+            def select_preset(_event, selector=color_selector, source=variable):
+                index = selector.current()
+                if 0 <= index < len(COLOR_PRESETS):
+                    source.set(COLOR_PRESETS[index][1])
+
+            def choose_color(source=variable):
+                color = colorchooser.askcolor(
+                    color=source.get(),
+                    parent=dialog,
+                    title="选择颜色",
+                )[1]
+                if color:
+                    source.set(color.upper())
+
+            color_selector.bind("<<ComboboxSelected>>", select_preset)
+            ttk.Button(
+                color_frame, text="自定义颜色...", command=choose_color
+            ).grid(row=0, column=2, padx=(6, 0))
+            variable.trace_add("write", sync_preview)
+            sync_preview()
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=len(fields), column=0, columnspan=2, sticky="e", padx=10, pady=(10, 10))
+
+        def commit():
+            new_params = {}
+            for key, (variable, kind) in entries.items():
+                text = variable.get().strip()
+                if kind == "color":
+                    try:
+                        dialog.winfo_rgb(text)
+                    except tk.TclError:
+                        messagebox.showerror(
+                            "参数无效",
+                            "{}不是有效的颜色值".format(labels[key]),
+                            parent=dialog,
+                        )
+                        return
+                    new_params[key] = text
+                    continue
+                try:
+                    value = int(text)
+                except ValueError:
+                    messagebox.showerror(
+                        "参数无效",
+                        "{} 必须是整数".format(labels[key]),
+                        parent=dialog,
+                    )
+                    return
+                if kind == "percent" and not 0 <= value <= 100:
+                    messagebox.showerror(
+                        "参数无效",
+                        "{} 必须在 0 到 100 之间".format(labels[key]),
+                        parent=dialog,
+                    )
+                    return
+                if kind == "permill" and not 1 <= value <= 1000:
+                    messagebox.showerror(
+                        "参数无效",
+                        "{} 必须在 1 到 1000 之间".format(labels[key]),
+                        parent=dialog,
+                    )
+                    return
+                new_params[key] = value
+            self.title_theme_params[name] = new_params
+            self._mark_dirty()
+            dialog.destroy()
+
+        ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side="right")
+        ttk.Button(buttons, text="确定", command=commit).pack(side="right", padx=(0, 8))
+        place_window_bottom_right(dialog)
+
     def read_config(self):
         config = self.config.copy()
         for key in BOOLEAN_FIELDS:
@@ -754,10 +1092,7 @@ class configeditor:
                 value = int(self.variables[key].get().strip())
             except ValueError as error:
                 raise ValueError("{} 必须是整数".format(FIELD_LABELS[key])) from error
-            if key == "title_outline_opacity":
-                if not 0 <= value <= 100:
-                    raise ValueError("描边透明度必须在 0 到 100 之间")
-            elif value < 1:
+            if value < 1:
                 raise ValueError("{} 必须大于 0".format(FIELD_LABELS[key]))
             config[key] = value
         for key in FLOAT_FIELDS:
@@ -776,7 +1111,7 @@ class configeditor:
             if not 0 <= config[key] <= 100:
                 raise ValueError("{} 必须在 0 到 100 之间".format(FIELD_LABELS[key]))
         for key in (
-            "title_width_permill", "title_length_permill", "title_guide_line_width_permill",
+            "title_width_permill", "title_length_permill",
             "content_padding_x_permill", "content_padding_y_permill", "section_spacing_permill",
         ):
             if not 1 <= config[key] <= 1000:
@@ -787,10 +1122,6 @@ class configeditor:
             raise ValueError("显示区域：上必须小于显示区域：下")
         if not 0.1 <= config["window_alpha"] <= 1:
             raise ValueError("窗口透明度必须在 0.1 到 1 之间")
-        if not 0 < config["scroll_step_size"] <= 1:
-            raise ValueError("每次滚动幅度必须大于 0 且不超过 1")
-        if not 0 < config["fade_step"] <= 1:
-            raise ValueError("淡入淡出步长必须大于 0 且不超过 1")
         for key in ("assignment_prefix", "assignment_suffix", "school", "class"):
             config[key] = self.variables[key].get()
         for key in COLOR_FIELDS:
@@ -818,12 +1149,20 @@ class configeditor:
             return
         try:
             config = self.read_config()
-            save_document(config)
+            create_config_backup()
+            create_custom_backup()
+            for name, params in self.animation_params.items():
+                save_display_animation_params(APPLICATION_DIR, name, params)
+            for name, params in self.title_theme_params.items():
+                save_title_theme_params(APPLICATION_DIR, name, params)
+            save_config(CONFIG_FILE, config)
             update_display_startup(config["auto_start_display"])
         except (OSError, TypeError, ValueError, winreg.error) as error:
             messagebox.showerror("保存失败", str(error), parent=self.root)
             return
         self.config = config
+        self.animation_params = {}
+        self.title_theme_params = {}
         self._dirty = False
         if self.save_button is not None:
             self.save_button.configure(state="disabled")
@@ -856,11 +1195,24 @@ class configeditor:
         self.status.set("已恢复默认配置并保存到 config.json")
         notify_config_saved()
 
-    def rollback_config(self):
-        backups = list_config_backups()
+    def rollback_config(self, initial_mode="config"):
+        existing_dialog = self.backup_manager_dialog
+        if existing_dialog is not None and existing_dialog.winfo_exists():
+            if initial_mode in ("config", "custom", "assignment"):
+                existing_dialog.set_backup_mode(initial_mode)
+            existing_dialog.lift()
+            existing_dialog.focus_force()
+            return
+
+        try:
+            ensure_backup_layout(RESOURCE_DIR)
+        except OSError as error:
+            messagebox.showerror("备份管理失败", str(error), parent=self.root)
+            return
+
         dialog = tk.Toplevel(self.root)
+        self.backup_manager_dialog = dialog
         set_window_icon(dialog, __file__)
-        dialog.title("备份管理")
         dialog.transient(self.root)
         dialog.grab_set()
         configure_tk_scaling(dialog)
@@ -868,94 +1220,231 @@ class configeditor:
         dialog.columnconfigure(0, weight=1)
         dialog.rowconfigure(1, weight=1)
 
-        ttk.Label(dialog, text="选择要恢复的配置备份：").grid(
-            row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 6)
+        type_names = {
+            "config": "配置",
+            "custom": "自定义数据",
+            "assignment": "作业",
+        }
+        backup_lists = {
+            "config": list_config_backups,
+            "custom": list_custom_backups,
+            "assignment": list_assignment_backups,
+        }
+        state = {
+            "mode": initial_mode if initial_mode in type_names else "config",
+        }
+        mode_var = tk.StringVar(value=type_names[state["mode"]])
+        heading = ttk.Label(dialog, text="")
+        heading.grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 6))
+
+        backup_list = ttk.Treeview(
+            dialog,
+            columns=("name", "time", "storage_type"),
+            show="headings",
+            selectmode="browse",
         )
-        backup_list = tk.Listbox(dialog, exportselection=False)
+        backup_list.heading("name", text="名称")
+        backup_list.heading("time", text="时间")
+        backup_list.heading("storage_type", text="存储类型")
+        backup_list.column("name", width=250, anchor="w")
+        backup_list.column("time", width=150, anchor="center")
+        backup_list.column("storage_type", width=90, anchor="center")
         backup_list.grid(row=1, column=0, sticky="nsew", padx=(10, 0), pady=(0, 8))
         scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=backup_list.yview)
         scrollbar.grid(row=1, column=1, sticky="ns", padx=(0, 10), pady=(0, 8))
         backup_list.configure(yscrollcommand=scrollbar.set)
-        for backup in backups:
-            backup_list.insert(tk.END, backup.name)
-        if backups:
-            backup_list.selection_set(0)
-            backup_list.activate(0)
-        else:
-            backup_list.insert(tk.END, "没有可用的配置备份")
-            backup_list.configure(state="disabled")
 
         buttons = ttk.Frame(dialog)
-        buttons.grid(row=2, column=0, columnspan=2, sticky="e", padx=10, pady=(0, 10))
+        buttons.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 10))
+        navigation = ttk.Frame(buttons)
+        navigation.pack(side="left")
+
+        def current_backups():
+            return backup_lists[state["mode"]]()
+
+        def refresh():
+            backups = current_backups()
+            for item in backup_list.get_children():
+                backup_list.delete(item)
+            for index, backup in enumerate(backups):
+                backup_list.insert(
+                    "", tk.END, iid=str(index),
+                    values=(
+                        backup_display_name(backup),
+                        backup_creation_time(backup),
+                        backup_storage_type(backup),
+                    ),
+                )
+            if backups:
+                backup_list.selection_set("0")
+                backup_list.focus("0")
+            else:
+                backup_list.insert(
+                    "", tk.END,
+                    values=("没有可用的{}备份".format(type_names[state["mode"]]), "", ""),
+                )
+            dialog.title("备份管理 - {}".format(type_names[state["mode"]]))
+            heading.configure(text="选择要操作的{}备份：".format(type_names[state["mode"]]))
+            mode_var.set(type_names[state["mode"]])
+            restore_button.configure(state="normal" if backups else "disabled")
+            delete_button.configure(state="normal" if backups else "disabled")
+            return backups
 
         def restore_selected():
-            selection = backup_list.curselection()
+            backups = current_backups()
+            selection = backup_list.selection()
             if not selection or not backups:
                 return
-            backup = backups[selection[0]]
+            backup = backups[int(selection[0])]
             try:
-                restored_config = load_config(backup)
-                create_config_backup(".json.bak")
-                shutil.copy2(backup, CONFIG_FILE)
-                self.config = restored_config
-                self.data = load_assignment_data(ASSIGNMENT_FILE, CONFIG_FILE)
-                self.load_values()
-                update_display_startup(self.config["auto_start_display"])
-            except (OSError, TypeError, ValueError, json.JSONDecodeError, winreg.error) as error:
-                messagebox.showerror("回滚失败", str(error), parent=dialog)
+                if state["mode"] == "custom":
+                    restore_custom_backup(backup)
+                elif state["mode"] == "assignment":
+                    automatic_backup = next_backup_path(
+                        ASSIGNMENT_BACKUP_DIR, ".json.bak", automatic=True
+                    )
+                    shutil.copy2(ASSIGNMENT_FILE, automatic_backup)
+                    shutil.copy2(backup, ASSIGNMENT_FILE)
+                    self.data = load_assignment_data(ASSIGNMENT_FILE, CONFIG_FILE)
+                else:
+                    restored_config = load_config(backup)
+                    create_config_backup()
+                    shutil.copy2(backup, CONFIG_FILE)
+                    self.config = restored_config
+                    self.data = load_assignment_data(ASSIGNMENT_FILE, CONFIG_FILE)
+                    self.load_values()
+                    update_display_startup(self.config["auto_start_display"])
+            except (
+                OSError, TypeError, ValueError, json.JSONDecodeError,
+                tarfile.TarError, winreg.error,
+            ) as error:
+                messagebox.showerror("恢复失败", str(error), parent=dialog)
                 return
-            self.status.set("已回滚配置：{}".format(backup.name))
+            self.status.set(
+                "已恢复{}备份：{}".format(
+                    type_names[state["mode"]], backup_display_name(backup)
+                )
+            )
             notify_config_saved()
-            dialog.destroy()
+            close_manager()
 
         def delete_selected():
-            selection = backup_list.curselection()
+            backups = current_backups()
+            selection = backup_list.selection()
             if not selection or not backups:
                 return
             if not messagebox.askyesno(
                 "确认删除",
-                "你确定要删除此配置备份吗？\n此操作不可恢复！",
+                "你确定要删除此备份吗？\n此操作不可恢复！",
                 parent=dialog,
             ):
                 return
-            backup = backups[selection[0]]
+            backup = backups[int(selection[0])]
             try:
                 backup.unlink()
             except OSError as error:
                 messagebox.showerror("删除失败", str(error), parent=dialog)
                 return
-            backups[:] = list_config_backups()
-            backup_list.configure(state="normal")
-            backup_list.delete(0, tk.END)
-            for remaining_backup in backups:
-                backup_list.insert(tk.END, remaining_backup.name)
-            if backups:
-                new_index = min(selection[0], len(backups) - 1)
-                backup_list.selection_set(new_index)
-                backup_list.activate(new_index)
-            else:
-                backup_list.insert(tk.END, "没有可用的配置备份")
-                backup_list.configure(state="disabled")
-                rollback_button.configure(state="disabled")
-                delete_button.configure(state="disabled")
+            refresh()
 
-        ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side="right")
-        rollback_button = ttk.Button(
-            buttons,
-            text="回滚",
-            command=restore_selected,
-            state="normal" if backups else "disabled",
+        def set_mode(backup_type=None):
+            if backup_type not in type_names:
+                backup_type = next(
+                    key for key, label in type_names.items()
+                    if label == mode_var.get()
+                )
+            state["mode"] = backup_type
+            refresh()
+
+        def close_manager():
+            if self.create_backup_dialog is not None:
+                if self.create_backup_dialog.winfo_exists():
+                    self.create_backup_dialog.destroy()
+                self.create_backup_dialog = None
+            self.backup_manager_dialog = None
+            dialog.destroy()
+
+        def open_create_dialog():
+            existing_dialog = self.create_backup_dialog
+            if existing_dialog is not None and existing_dialog.winfo_exists():
+                existing_dialog.lift()
+                existing_dialog.focus_force()
+                return
+            self.create_backup_dialog = None
+
+            create_dialog = tk.Toplevel(dialog)
+            self.create_backup_dialog = create_dialog
+            backup_type = state["mode"]
+            set_window_icon(create_dialog, __file__)
+            create_dialog.title("创建备份 - {}".format(type_names[backup_type]))
+            create_dialog.transient(dialog)
+            create_dialog.grab_set()
+            configure_tk_scaling(create_dialog)
+            create_dialog.columnconfigure(1, weight=1)
+
+            name_var = tk.StringVar()
+            ttk.Label(create_dialog, text="备份名称").grid(
+                row=0, column=0, sticky="w", padx=(12, 8), pady=(12, 6)
+            )
+            name_entry = ttk.Entry(create_dialog, textvariable=name_var, width=30)
+            name_entry.grid(row=0, column=1, sticky="ew", padx=(0, 12), pady=(12, 6))
+
+            def close_create_dialog():
+                self.create_backup_dialog = None
+                create_dialog.destroy()
+
+            def create():
+                try:
+                    backup = create_manual_backup(backup_type, name_var.get())
+                except (OSError, ValueError, tarfile.TarError) as error:
+                    messagebox.showerror("创建备份失败", str(error), parent=create_dialog)
+                    return
+                state["mode"] = backup_type
+                close_create_dialog()
+                refresh()
+                self.status.set(
+                    "已创建{}备份：{}".format(
+                        type_names[backup_type], backup_display_name(backup)
+                    )
+                )
+
+            create_buttons = ttk.Frame(create_dialog)
+            create_buttons.grid(row=1, column=0, columnspan=2, sticky="e", padx=12, pady=(8, 12))
+            ttk.Button(create_buttons, text="取消", command=close_create_dialog).pack(
+                side="right"
+            )
+            ttk.Button(create_buttons, text="创建", command=create).pack(
+                side="right", padx=(0, 8)
+            )
+            create_dialog.bind("<Return>", lambda _event: create())
+            create_dialog.protocol("WM_DELETE_WINDOW", close_create_dialog)
+            place_window_bottom_right(create_dialog)
+            name_entry.focus_set()
+
+        ttk.Button(navigation, text="+", width=2, command=open_create_dialog).pack(
+            side="left", padx=(0, 4)
         )
-        rollback_button.pack(side="right", padx=(0, 8))
-        delete_button = ttk.Button(
-            buttons,
-            text="删除",
-            command=delete_selected,
-            state="normal" if backups else "disabled",
+        ttk.Label(navigation, text="备份类型").pack(side="left", padx=(0, 4))
+        mode_choice = ttk.Combobox(
+            navigation,
+            textvariable=mode_var,
+            values=tuple(type_names.values()),
+            state="readonly",
+            width=12,
         )
+        mode_choice.pack(side="left")
+        mode_choice.bind("<<ComboboxSelected>>", lambda _event: set_mode())
+
+        ttk.Button(buttons, text="取消", command=close_manager).pack(side="right")
+        restore_button = ttk.Button(buttons, text="恢复", command=restore_selected)
+        restore_button.pack(side="right", padx=(0, 8))
+        delete_button = ttk.Button(buttons, text="删除", command=delete_selected)
         delete_button.pack(side="right", padx=(0, 8))
+
         backup_list.bind("<Double-Button-1>", lambda _event: restore_selected())
-        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.set_backup_mode = set_mode
+        dialog.protocol("WM_DELETE_WINDOW", close_manager)
+        refresh()
         place_window_bottom_right(dialog)
 
     def open_assignment_editor(self):
@@ -996,14 +1485,18 @@ class configeditor:
         return "break"
 
 
-def main():
+def main(initial_backup_type=None):
     enable_high_dpi()
     from runtime import acquire_single_instance
     if not acquire_single_instance("dashboard"):
         return
+    if initial_backup_type is None and "--backup-type" in sys.argv:
+        index = sys.argv.index("--backup-type")
+        if index + 1 < len(sys.argv):
+            initial_backup_type = sys.argv[index + 1]
     root = tk.Tk()
     try:
-        configeditor(root)
+        configeditor(root, initial_backup_type)
         place_window_bottom_right(root)
     except (OSError, json.JSONDecodeError, ValueError) as error:
         messagebox.showerror("加载失败", str(error), parent=root)

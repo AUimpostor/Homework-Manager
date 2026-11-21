@@ -21,7 +21,7 @@ import threading
 import copy
 import shutil
 import subprocess
-from datetime import datetime
+from datetime import datetime, time, timedelta
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -72,35 +72,233 @@ SCHEDULE_VISIBLE_COLOR = "#69C8D0"
 SCHEDULE_HIDDEN_COLOR = "#315E7D"
 
 
-def scheduled_today(rules, today=None):
-    today = today or datetime.now().date()
-    weekday = today.weekday() + 1
-    month_week = (today.day - 1) // 7 + 1
+def parse_datetime(value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.strip())
+    except ValueError:
+        try:
+            return datetime.strptime(value.strip(), "%Y-%m-%d")
+        except ValueError:
+            return None
+
+
+def parse_time(value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    if value.strip() in ("24:00", "24:00:00"):
+        return None
+    try:
+        return time.fromisoformat(value.strip())
+    except ValueError:
+        return None
+
+
+QUICK_PLAN_CHOICES = (
+    "本周一",
+    "本周二",
+    "本周三",
+    "本周四",
+    "本周五",
+    "本周六",
+    "本周日",
+    "下周一",
+)
+
+
+def quick_plan_until(choice, now=None):
+    now = now or datetime.now()
+    if choice not in QUICK_PLAN_CHOICES:
+        raise ValueError("不支持的快速计划目标")
+    weekday = 1 if choice == "下周一" else QUICK_PLAN_CHOICES.index(choice) + 1
+    if choice == "下周一":
+        monday = now.date() - timedelta(days=now.isoweekday() - 1)
+        target_date = monday + timedelta(days=7)
+    else:
+        monday = now.date() - timedelta(days=now.isoweekday() - 1)
+        target_date = monday + timedelta(days=weekday - 1)
+    target = datetime.combine(target_date, time.min)
+    return {
+        "enabled": True,
+        "root": {
+            "type": "interval",
+            "start": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "end": target.strftime("%Y-%m-%d %H:%M:%S"),
+            "children": [],
+        },
+    }
+
+
+def migrate_legacy_schedule_rules(rules):
+    """Convert old persisted rules to the nested schedule-tree format."""
+    children = []
     for rule in rules or []:
         if not isinstance(rule, dict):
             continue
-        cycle = rule.get("cycle")
-        if cycle == "每天":
-            return True
-        if cycle == "每周" and rule.get("weekday") == weekday:
-            return True
-        if cycle == "每月":
-            if rule.get("kind") == "某日" and rule.get("day") == today.day:
-                return True
-            if rule.get("kind") == "某周":
-                week = rule.get("week")
-                if rule.get("day_type") == "整周" and week == month_week:
-                    return True
-                if rule.get("day_type") == "某日" and week == month_week and rule.get("weekday") == weekday:
-                    return True
+        if rule.get("cycle") in ("daily", "每天"):
+            children.append({"type": "calendar", "unit": "day", "selectors": {}, "children": []})
+        elif rule.get("cycle") in ("weekly", "每周"):
+            children.append({
+                "type": "calendar",
+                "unit": "week",
+                "selectors": {"weekdays": [rule.get("weekday")]},
+                "children": [],
+            })
+        elif rule.get("cycle") in ("monthly", "每月"):
+            selectors = {}
+            if rule.get("kind") in ("day", "某日"):
+                selectors["month_days"] = [rule.get("day")]
+            else:
+                selectors["week_of_month"] = [rule.get("week")]
+                if rule.get("weekday") is not None:
+                    selectors["weekdays"] = [rule.get("weekday")]
+            children.append({"type": "calendar", "unit": "month", "selectors": selectors, "children": []})
+    if not children:
+        return None
+    return {"enabled": True, "root": {"type": "any", "children": children}}
+
+
+def normalize_schedule(schedule, legacy_rules=None):
+    if isinstance(schedule, dict):
+        root = schedule.get("root")
+        if isinstance(root, dict):
+            root = copy.deepcopy(root)
+
+            def remove_unsupported_calendar_nodes(node):
+                if not isinstance(node, dict):
+                    return None
+                if node.get("type") == "calendar" and node.get("unit") not in ("day", "week", "month"):
+                    return None
+                children = node.get("children")
+                if isinstance(children, list):
+                    node["children"] = [
+                        cleaned
+                        for child in children
+                        if (cleaned := remove_unsupported_calendar_nodes(child)) is not None
+                    ]
+                return node
+
+            root = remove_unsupported_calendar_nodes(root)
+            if root is None:
+                root = {"type": "all", "children": []}
+            return {"enabled": schedule.get("enabled", True) is True, "root": root}
+    return migrate_legacy_schedule_rules(legacy_rules)
+
+
+def is_calendar_match(node, moment):
+    unit = node.get("unit")
+    if unit == "day":
+        pass
+    elif unit == "week":
+        pass
+    elif unit == "month":
+        pass
+    else:
+        return False
+
+    selectors = node.get("selectors", {})
+    if not isinstance(selectors, dict):
+        selectors = {}
+
+    weekdays = selectors.get("weekdays")
+    if weekdays:
+        if moment.isoweekday() not in weekdays:
+            return False
+
+    month_days = selectors.get("month_days")
+    if month_days:
+        matched = False
+        for value in month_days:
+            if value == "last":
+                next_month = moment.replace(day=28) + timedelta(days=4)
+                last_day = (next_month - timedelta(days=next_month.day)).day
+                matched = moment.day == last_day
+            elif isinstance(value, int) and moment.day == value:
+                matched = True
+            if matched:
+                break
+        if not matched:
+            return False
+
+    months = selectors.get("months")
+    if months and moment.month not in months:
+        return False
+
+    week_of_month = selectors.get("week_of_month")
+    if week_of_month:
+        current_week = (moment.day - 1) // 7 + 1
+        matched = False
+        for value in week_of_month:
+            if value == "last":
+                next_week = moment + timedelta(days=7)
+                matched = next_week.month != moment.month
+            elif isinstance(value, int) and current_week == value:
+                matched = True
+            if matched:
+                break
+        if not matched:
+            return False
+    return True
+
+
+def schedule_matches_node(node, moment):
+    if not isinstance(node, dict):
+        return False
+    node_type = node.get("type")
+
+    if node_type == "interval":
+        start = parse_datetime(node.get("start"))
+        end = parse_datetime(node.get("end"))
+        if start is not None and moment < start:
+            return False
+        if end is not None and moment >= end:
+            return False
+    elif node_type == "calendar":
+        if not is_calendar_match(node, moment):
+            return False
+    elif node_type == "time_window":
+        start = parse_time(node.get("start"))
+        end = parse_time(node.get("end"))
+        if start is not None and moment.time().replace(tzinfo=None) < start:
+            return False
+        if end is not None and moment.time().replace(tzinfo=None) >= end:
+            return False
+    elif node_type == "any":
+        return any(schedule_matches_node(child, moment) for child in node.get("children", []))
+    elif node_type == "all":
+        children = node.get("children", [])
+        return bool(children) and all(schedule_matches_node(child, moment) for child in children)
+
+    children = node.get("children", [])
+    if not children:
+        return True
+    if node_type in ("interval", "calendar", "time_window"):
+        return all(schedule_matches_node(child, moment) for child in children)
     return False
+
+
+def schedule_matches(schedule, moment=None):
+    moment = moment or datetime.now()
+    if not isinstance(schedule, dict) or schedule.get("enabled", True) is not True:
+        return False
+    root = schedule.get("root")
+    return isinstance(root, dict) and schedule_matches_node(root, moment)
 
 
 def refresh_scheduled_assignments(entries):
     for assignments in entries.values():
         for assignment in assignments:
-            if assignment.get("schedule_rules"):
-                assignment["hide"] = not scheduled_today(assignment["schedule_rules"])
+            schedule = assignment.get("schedule")
+            if isinstance(schedule, dict) and schedule.get("enabled", True):
+                assignment["hide"] = not schedule_matches(schedule)
+
+
+def schedule_summary(schedule):
+    if not isinstance(schedule, dict) or not schedule.get("root"):
+        return ""
+    enabled = "启用" if schedule.get("enabled", True) else "停用"
+    return "计划规则（{}）".format(enabled)
 
 def load_assignment():
     entries = {}
@@ -135,6 +333,11 @@ def load_assignment():
                         and assignment_text.strip()
                         and isinstance(assignment.get("hide", False), bool)
                     ):
+                        legacy_rules = assignment.get("schedule_rules", [])
+                        schedule = normalize_schedule(
+                            assignment.get("schedule"),
+                            legacy_rules if isinstance(legacy_rules, list) else [],
+                        )
                         valid_assignments.append(
                             {
                             "assignment": assignment_text.strip(),
@@ -142,7 +345,7 @@ def load_assignment():
                             "ignore_prefix": assignment.get("ignore_prefix", False) is True,
                             "ignore_suffix": assignment.get("ignore_suffix", False) is True,
                             "secondary": assignment.get("secondary", False) is True,
-                            "schedule_rules": assignment.get("schedule_rules", []) if isinstance(assignment.get("schedule_rules", []), list) else [],
+                            "schedule": schedule,
                                 "date_modified": assignment.get(
                                     "date_modified", current_time()
                                 ),
@@ -154,6 +357,7 @@ def load_assignment():
                     raise ValueError("作业项必须是非空字符串")
             entries[subject] = valid_assignments
 
+    refresh_scheduled_assignments(entries)
     return entries, config
 
 
@@ -333,9 +537,6 @@ class editor:
         self.redo_button = ttk.Button(bottom, text="恢复", command=self.redo, state="disabled")
         self.redo_button.grid(row=0, column=2, sticky="e", padx=(0, 4))
         self.save_button = ttk.Button(bottom, text="保存作业", command=self.save)
-        self.backup_button = ttk.Button(
-            bottom, text="作业备份管理", command=lambda: self.open_assignment_backup_manager(self.root)
-        )
         self.dashboard_button = ttk.Button(
             bottom, text="仪表盘...", command=self.open_dashboard
         )
@@ -343,7 +544,6 @@ class editor:
             "undo": self.undo_button,
             "redo": self.redo_button,
             "save": self.save_button,
-            "backup": self.backup_button,
             "dashboard": self.dashboard_button,
         }
         self.all_management_button = ttk.Button(
@@ -419,7 +619,6 @@ class editor:
             ("undo", "撤销", self.undo, self.undo_button),
             ("redo", "恢复", self.redo, self.redo_button),
             ("save", "保存作业", self.save, self.save_button),
-            ("backup", "作业备份管理", lambda: self.open_assignment_backup_manager(dialog), None),
             ("dashboard", "仪表盘...", self.open_dashboard, None),
         ]
         self.management_action_buttons = {}
@@ -443,7 +642,6 @@ class editor:
     def _management_action_specs(self):
         return [("undo", "撤销", self.undo, self.undo_button), ("redo", "恢复", self.redo, self.redo_button),
                 ("save", "保存作业", self.save, self.save_button),
-                ("backup", "作业备份管理", lambda: self.open_assignment_backup_manager(self.root), None),
                 ("dashboard", "仪表盘...", self.open_dashboard, None)]
 
     def open_dashboard(self):
@@ -499,92 +697,6 @@ class editor:
             else:
                 widget.grid_remove()
         self.all_management_button.grid(row=0, column=column, sticky="e")
-
-    def open_assignment_backup_manager(self, parent):
-        backup_dir = DATA_DIR / "backup"
-        backups = sorted(
-            (path for path in backup_dir.glob("assignment*.json.bak") if path.is_file()),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
-        dialog = tk.Toplevel(parent)
-        set_window_icon(dialog, __file__)
-        dialog.title("作业备份管理")
-        dialog.transient(parent)
-        dialog.grab_set()
-        configure_tk_scaling(dialog)
-        dialog.columnconfigure(0, weight=1)
-        dialog.rowconfigure(1, weight=1)
-        ttk.Label(dialog, text="选择要恢复的作业备份：").grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 6))
-        backup_list = tk.Listbox(dialog, exportselection=False)
-        backup_list.grid(row=1, column=0, sticky="nsew", padx=(10, 0), pady=(0, 8))
-        scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=backup_list.yview)
-        scrollbar.grid(row=1, column=1, sticky="ns", padx=(0, 10), pady=(0, 8))
-        backup_list.configure(yscrollcommand=scrollbar.set)
-        for backup in backups:
-            backup_list.insert(tk.END, backup.name)
-        if backups:
-            backup_list.selection_set(0)
-        else:
-            backup_list.insert(tk.END, "没有可用的作业备份")
-            backup_list.configure(state="disabled")
-        buttons = ttk.Frame(dialog)
-        buttons.grid(row=2, column=0, columnspan=2, sticky="e", padx=10, pady=(0, 10))
-
-        def refresh():
-            backups[:] = sorted((p for p in backup_dir.glob("assignment*.json.bak") if p.is_file()), key=lambda p: p.stat().st_mtime, reverse=True)
-            backup_list.configure(state="normal")
-            backup_list.delete(0, tk.END)
-            for path in backups:
-                backup_list.insert(tk.END, path.name)
-            if backups:
-                backup_list.selection_set(0)
-            else:
-                backup_list.insert(tk.END, "没有可用的作业备份")
-                backup_list.configure(state="disabled")
-
-        def restore():
-            selection = backup_list.curselection()
-            if not selection or not backups:
-                return
-            if not messagebox.askyesno("恢复作业备份", "恢复后，当前作业数据将被备份覆盖。继续吗？", parent=dialog):
-                return
-            try:
-                backup_dir.mkdir(parents=True, exist_ok=True)
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                shutil.copy2(ASSIGNMENT_FILE, backup_dir / "assignment_{}.json.bak".format(timestamp))
-                shutil.copy2(backups[selection[0]], ASSIGNMENT_FILE)
-                self.assignment, self.config = load_assignment()
-                self.refresh_subjects()
-                self.undo_stack.clear()
-                self.redo_stack.clear()
-                self._update_history_buttons()
-                self._dirty = False
-                self._update_save_button()
-                notify_config_saved()
-            except (OSError, ValueError, json.JSONDecodeError) as error:
-                messagebox.showerror("恢复失败", str(error), parent=dialog)
-                return
-            dialog.destroy()
-
-        def delete():
-            selection = backup_list.curselection()
-            if not selection or not backups:
-                return
-            if not messagebox.askyesno("确认删除", "确定删除此作业备份吗？此操作不可恢复。", parent=dialog):
-                return
-            try:
-                backups[selection[0]].unlink()
-            except OSError as error:
-                messagebox.showerror("删除失败", str(error), parent=dialog)
-                return
-            refresh()
-
-        ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side="right")
-        ttk.Button(buttons, text="恢复", command=restore, state="normal" if backups else "disabled").pack(side="right", padx=(0, 8))
-        ttk.Button(buttons, text="删除", command=delete, state="normal" if backups else "disabled").pack(side="right", padx=(0, 8))
-        backup_list.bind("<Double-Button-1>", lambda _event: restore())
-        place_window_bottom_right(dialog)
 
     def move_action_order(self, key, direction):
         keys = [item[0] for item in self.action_specs]
@@ -722,7 +834,7 @@ class editor:
             if assignment["hide"]:
                 display_text = "• " + display_text
             self.assignment_list.insert(tk.END, display_text)
-            if assignment.get("schedule_rules"):
+            if assignment.get("schedule"):
                 self.assignment_list.itemconfig(index, foreground=SCHEDULE_VISIBLE_COLOR if assignment["hide"] else SCHEDULE_HIDDEN_COLOR)
             elif assignment["hide"]:
                 self.assignment_list.itemconfig(index, foreground="#aaaaaa")
@@ -766,7 +878,8 @@ class editor:
         if has_selection:
             index = selection[0]
             selected_assignment = self.assignment[subject][index]
-            scheduled = bool(selected_assignment.get("schedule_rules"))
+            schedule = selected_assignment.get("schedule")
+            scheduled = bool(schedule and schedule.get("enabled", True))
             hidden = selected_assignment["hide"]
             self.toggle_button.configure(
                 text="由计划控制" if scheduled else ("显示" if hidden else "隐藏"),
@@ -818,13 +931,67 @@ class editor:
         ignore_prefix_var = tk.BooleanVar(value=current_assignment.get("ignore_prefix", False))
         ignore_suffix_var = tk.BooleanVar(value=current_assignment.get("ignore_suffix", False))
         secondary_var = tk.BooleanVar(value=current_assignment.get("secondary", False))
-        schedule_rules = copy.deepcopy(current_assignment.get("schedule_rules", []))
+        schedule_configured = [isinstance(current_assignment.get("schedule"), dict)]
+        schedule_enabled_var = tk.BooleanVar(
+            value=(
+                schedule_configured[0]
+                and current_assignment.get("schedule", {}).get("enabled", True)
+            )
+        )
+        schedule = copy.deepcopy(current_assignment.get("schedule")) or {
+            "enabled": True,
+            "root": {"type": "all", "children": []},
+        }
         property_row = ttk.Frame(form)
         property_row.grid(row=2, column=0, sticky="w", pady=(8, 0))
         ttk.Checkbutton(property_row, text="忽略前缀", variable=ignore_prefix_var).pack(side="left", padx=(0, 12))
         ttk.Checkbutton(property_row, text="忽略后缀", variable=ignore_suffix_var).pack(side="left", padx=(0, 12))
         ttk.Checkbutton(property_row, text="次要作业", variable=secondary_var).pack(side="left")
-        ttk.Button(property_row, text="计划作业", command=lambda: self._schedule_rules_dialog(dialog, schedule_rules)).pack(side="left", padx=(12, 0))
+
+        schedule_row = ttk.Frame(form)
+        schedule_row.grid(row=3, column=0, sticky="w", pady=(6, 0))
+        pending_quick_plan = [None]
+
+        def finish_schedule_config():
+            schedule_configured[0] = True
+            pending_quick_plan[0] = None
+
+        def open_schedule():
+            self._schedule_rules_dialog(
+                dialog,
+                schedule,
+                on_confirm=finish_schedule_config,
+            )
+
+        ttk.Checkbutton(schedule_row, variable=schedule_enabled_var).pack(side="left", padx=(0, 6))
+        ttk.Button(schedule_row, text="计划任务", command=open_schedule).pack(side="left")
+        ttk.Label(schedule_row, text="快速计划").pack(side="left", padx=(12, 6))
+        quick_plan_var = tk.StringVar(value="")
+        quick_plan_selector = ttk.Combobox(
+            schedule_row,
+            textvariable=quick_plan_var,
+            values=["直到" + choice for choice in QUICK_PLAN_CHOICES],
+            state="readonly",
+            width=12,
+        )
+        quick_plan_selector.pack(side="left")
+
+        def apply_quick_plan(_event=None):
+            choice_text = quick_plan_var.get()
+            if not choice_text.startswith("直到"):
+                return
+            choice = choice_text[len("直到"):]
+            try:
+                planned = quick_plan_until(choice)
+            except ValueError:
+                return
+            pending_quick_plan[0] = choice
+            schedule.clear()
+            schedule.update(planned)
+            schedule_configured[0] = True
+            schedule_enabled_var.set(True)
+
+        quick_plan_selector.bind("<<ComboboxSelected>>", apply_quick_plan)
 
         def save_assignment():
             value = editor.get("1.0", "end-1c").strip()
@@ -832,14 +999,23 @@ class editor:
                 messagebox.showwarning("输入无效", "作业内容不能为空。", parent=dialog)
                 editor.focus_set()
                 return
-            now = datetime.now().isoformat(timespec="seconds")
+            current_now = datetime.now()
+            now = current_now.isoformat(timespec="seconds")
+            if pending_quick_plan[0] is not None:
+                planned = quick_plan_until(pending_quick_plan[0], current_now)
+                schedule.clear()
+                schedule.update(planned)
             if editing:
                 self._record_undo()
                 self.assignment[subject][assignment_index]["assignment"] = value
                 self.assignment[subject][assignment_index]["ignore_prefix"] = ignore_prefix_var.get()
                 self.assignment[subject][assignment_index]["ignore_suffix"] = ignore_suffix_var.get()
                 self.assignment[subject][assignment_index]["secondary"] = secondary_var.get()
-                self.assignment[subject][assignment_index]["schedule_rules"] = schedule_rules
+                schedule["enabled"] = schedule_enabled_var.get()
+                if schedule_configured[0] and schedule.get("root"):
+                    self.assignment[subject][assignment_index]["schedule"] = schedule
+                else:
+                    self.assignment[subject][assignment_index].pop("schedule", None)
                 self.assignment[subject][assignment_index]["date_modified"] = now
                 selected_index = assignment_index
                 self._context_status("已编辑", subject, value)
@@ -851,9 +1027,11 @@ class editor:
                     "ignore_prefix": ignore_prefix_var.get(),
                     "ignore_suffix": ignore_suffix_var.get(),
                     "secondary": secondary_var.get(),
-                    "schedule_rules": schedule_rules,
                     "date_modified": now,
                 })
+                schedule["enabled"] = schedule_enabled_var.get()
+                if schedule_configured[0] and schedule.get("root"):
+                    self.assignment[subject][-1]["schedule"] = schedule
                 selected_index = len(self.assignment[subject]) - 1
                 self._context_status("已添加", subject, value)
             refresh_scheduled_assignments(self.assignment)
@@ -861,7 +1039,7 @@ class editor:
             dialog.destroy()
 
         buttons = ttk.Frame(form)
-        buttons.grid(row=3, column=0, sticky="e", pady=(12, 0))
+        buttons.grid(row=4, column=0, sticky="e", pady=(12, 0))
         ttk.Button(buttons, text="取消", command=dialog.destroy).pack(
             side="right", padx=(8, 0)
         )
@@ -870,76 +1048,320 @@ class editor:
         dialog.after_idle(editor.focus_set)
         place_window_bottom_right(dialog)
 
-    def _schedule_rules_dialog(self, parent, rules):
-        window = tk.Toplevel(parent); window.title("配置计划规则"); window.transient(parent); window.grab_set()
-        frame = ttk.Frame(window, padding=12); frame.pack(fill="both", expand=True)
-        listing = tk.Listbox(frame, height=7, width=48); listing.pack(fill="both", expand=True)
-        def label(rule):
-            if rule["cycle"] == "每天": return "每天：每天"
-            if rule["cycle"] == "每周": return "每周：周的第{}日".format(rule["weekday"])
-            if rule["kind"] == "某日": return "每月：月的第{}日".format(rule["day"])
-            if rule["day_type"] == "整周": return "每月：月的第{}周（整周）".format(rule["week"])
-            return "每月：月的第{}周，周的第{}日".format(rule["week"], rule["weekday"])
+    def _schedule_rules_dialog(self, parent, schedule, on_confirm=None):
+        schedule_target = schedule if isinstance(schedule, dict) else None
+        if isinstance(schedule, dict) and isinstance(schedule.get("root"), dict):
+            schedule = copy.deepcopy(schedule)
+        else:
+            schedule = {"enabled": True, "root": {"type": "all", "children": []}}
+
+        window = tk.Toplevel(parent)
+        window.title("配置计划")
+        window.transient(parent)
+        window.grab_set()
+        configure_tk_scaling(window)
+
+        frame = ttk.Frame(window, padding=12)
+        frame.pack(fill="both", expand=True)
+
+        tree = ttk.Treeview(frame, show="tree", height=14)
+        tree.pack(fill="both", expand=True)
+
+        def node_label(node):
+            node_type = node.get("type")
+            if node_type == "interval":
+                start = node.get("start") or "无限开始"
+                end = node.get("end") or "无限结束"
+                return "时限区间：{} 至 {}".format(start, end)
+            if node_type == "calendar":
+                names = {"day": "日", "week": "周", "month": "月"}
+                unit = names.get(node.get("unit"), str(node.get("unit")))
+                parts = []
+                selectors = node.get("selectors", {})
+                if selectors.get("weekdays"):
+                    parts.append("星期{}".format(",".join(str(v) for v in selectors["weekdays"])))
+                if selectors.get("month_days"):
+                    parts.append("日期{}".format(",".join(str(v) for v in selectors["month_days"])))
+                if selectors.get("months"):
+                    parts.append("月份{}".format(",".join(str(v) for v in selectors["months"])))
+                if selectors.get("week_of_month"):
+                    parts.append("第{}周".format(",".join(str(v) for v in selectors["week_of_month"])))
+                return "日历周期：{}".format(unit + ("；" + "、".join(parts) if parts else ""))
+            if node_type == "time_window":
+                return "时间窗口：{} 至 {}".format(node.get("start") or "00:00:00", node.get("end") or "24:00:00")
+            if node_type == "any":
+                return "∃ 满足任何"
+            if node_type == "all":
+                return "∀ 满足所有"
+            return str(node_type)
+
+        def get_node(path):
+            node = schedule["root"]
+            if path == "0":
+                return node
+            for index_text in path.split(".")[1:]:
+                node = node.setdefault("children", [])[int(index_text)]
+            return node
+
+        def get_parent(path):
+            if path == "0":
+                return None
+            parts = path.split(".")
+            parent_path = ".".join(parts[:-1])
+            node = get_node(parent_path)
+            return node, int(parts[-1])
+
         def redraw():
-            listing.delete(0, tk.END)
-            for rule in rules: listing.insert(tk.END, label(rule))
-        def add():
-            d = tk.Toplevel(window); d.title("添加计划规则"); d.transient(window); d.grab_set()
-            f = ttk.Frame(d, padding=12); f.pack(fill="both", expand=True)
-            cycle = tk.StringVar(value="每天")
-            kind = tk.StringVar(value="某日")
-            daytype = tk.StringVar(value="每天")
-            month_number = tk.IntVar(value=1)
-            weekday = tk.IntVar(value=1)
-            previous_kind = [kind.get()]
-            rows = ttk.Frame(f); rows.pack(fill="both", expand=True, anchor="w")
-            def fields(*_):
-                for child in rows.winfo_children(): child.destroy()
-                ttk.Label(rows, text="周期").grid(row=0, column=0, sticky="w", pady=3)
-                ttk.Combobox(rows, textvariable=cycle, values=("每天", "每周", "每月"), state="readonly", width=14).grid(row=0, column=1, sticky="w", pady=3)
-                if cycle.get() == "每周":
-                    ttk.Label(rows, text="某日").grid(row=1, column=0, sticky="w", pady=3)
-                    ttk.Label(rows, text="周的第").grid(row=2, column=0, sticky="w", pady=3)
-                    ttk.Spinbox(rows, from_=1, to=7, textvariable=weekday, width=5).grid(row=2, column=1, sticky="w", pady=3)
-                    ttk.Label(rows, text="日").grid(row=2, column=2, sticky="w", pady=3)
-                elif cycle.get() == "每月":
-                    ttk.Label(rows, text="每月的").grid(row=1, column=0, sticky="w", pady=3)
-                    ttk.Combobox(rows, textvariable=kind, values=("某日", "某周"), state="readonly", width=14).grid(row=1, column=1, sticky="w", pady=3)
-                    ttk.Label(rows, text="月的第").grid(row=2, column=0, sticky="w", pady=3)
-                    ttk.Spinbox(rows, from_=1, to=(31 if kind.get() == "某日" else 5), textvariable=month_number, width=5).grid(row=2, column=1, sticky="w", pady=3)
-                    ttk.Label(rows, text="日" if kind.get() == "某日" else "周").grid(row=2, column=2, sticky="w", pady=3)
-                    if kind.get() == "某周":
-                        ttk.Label(rows, text="每周的").grid(row=3, column=0, sticky="w", padx=15, pady=3)
-                        ttk.Combobox(rows, textvariable=daytype, values=("每天", "某日"), state="readonly", width=14).grid(row=3, column=1, sticky="w", pady=3)
-                        if daytype.get() == "某日":
-                            ttk.Label(rows, text="周的第").grid(row=4, column=0, sticky="w", padx=15, pady=3)
-                            ttk.Spinbox(rows, from_=1, to=7, textvariable=weekday, width=5).grid(row=4, column=1, sticky="w", pady=3)
-                            ttk.Label(rows, text="日").grid(row=4, column=2, sticky="w", pady=3)
-            cycle.trace_add("write", fields)
-            def kind_changed(*_):
-                if kind.get() != previous_kind[0]:
-                    month_number.set(1)
-                    previous_kind[0] = kind.get()
-                fields()
-            kind.trace_add("write", kind_changed)
-            daytype.trace_add("write", fields)
-            fields()
-            def accept():
-                r={"cycle":cycle.get()}
-                if cycle.get()=="每周": r.update(weekday=weekday.get())
-                elif cycle.get()=="每月":
-                    r["kind"]=kind.get()
-                    if kind.get()=="某日": r["day"]=month_number.get()
+            tree.delete(*tree.get_children())
+            def add_branch(node, parent, iid):
+                tree.insert(parent, "end", iid=iid, text=node_label(node), open=True)
+                children = node.get("children", [])
+                if isinstance(children, list):
+                    for index, child in enumerate(children):
+                        add_branch(child, iid, "{}.{}".format(iid, index))
+            add_branch(schedule["root"], "", "0")
+            tree.update_idletasks()
+
+        def edit_node(existing=None, create=False, on_changed=None):
+            d = tk.Toplevel(window)
+            d.title("编辑规则节点" if existing is not None else "添加规则节点")
+            d.transient(window)
+            d.grab_set()
+            configure_tk_scaling(d)
+            f = ttk.Frame(d, padding=12)
+            f.pack(fill="both", expand=True)
+            existing = existing or {"type": "interval", "children": []}
+
+            type_var = tk.StringVar(value=existing.get("type", "interval"))
+            ttk.Label(f, text="节点类型").grid(row=0, column=0, sticky="w", pady=3)
+            type_box = ttk.Combobox(
+                f,
+                textvariable=type_var,
+                values=("时限区间", "日历循环", "时间窗口", "∃ 满足任何", "∀ 满足所有"),
+                state="readonly",
+                width=18,
+            )
+            type_box.grid(row=0, column=1, sticky="w", pady=3)
+            type_names = {
+                "时限区间": "interval",
+                "日历循环": "calendar",
+                "时间窗口": "time_window",
+                "∃ 满足任何": "any",
+                "∀ 满足所有": "all",
+            }
+
+            fields = ttk.Frame(f)
+            fields.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(6, 6))
+            start_var = tk.StringVar(value=existing.get("start", ""))
+            end_var = tk.StringVar(value=existing.get("end", ""))
+            unit_var = tk.StringVar(value=existing.get("unit", "week"))
+            weekday_vars = {day: tk.BooleanVar(value=False) for day in range(1, 8)}
+            month_day_vars = {day: tk.BooleanVar(value=False) for day in range(1, 32)}
+            week_vars = {week: tk.BooleanVar(value=False) for week in range(1, 6)}
+            selectors = existing.get("selectors", {})
+            if isinstance(selectors, dict):
+                for day in selectors.get("weekdays", []):
+                    if day in weekday_vars:
+                        weekday_vars[day].set(True)
+                for day in selectors.get("month_days", []):
+                    if day in month_day_vars:
+                        month_day_vars[day].set(True)
+                for week in selectors.get("week_of_month", []):
+                    if week in week_vars:
+                        week_vars[week].set(True)
+
+                weekday_widgets = {}
+
+                def sync_month_week_selection(*_):
+                    enabled = any(var.get() for var in week_vars.values())
+                    if enabled:
+                        for var in month_day_vars.values():
+                            var.set(False)
                     else:
-                        r.update(week=month_number.get(),day_type="每天" if daytype.get() == "每天" else "某日")
-                        if daytype.get()=="某日": r["weekday"]=weekday.get()
-                rules.append(r); redraw(); d.destroy()
-            ttk.Button(f,text="确定",command=accept).pack(anchor="e", pady=(10, 0))
-            configure_tk_scaling(d); set_window_size_percent(d, 28, 28); place_window_bottom_right(d)
-        bar=ttk.Frame(frame); bar.pack(fill="x")
-        ttk.Button(bar,text="添加",command=add).pack(side="left")
-        ttk.Button(bar,text="删除",command=lambda: (rules.pop(listing.curselection()[0]),redraw()) if listing.curselection() else None).pack(side="left",padx=6)
-        ttk.Button(bar,text="确定",command=window.destroy).pack(side="right"); redraw(); place_window_bottom_right(window)
+                        for var in weekday_vars.values():
+                            var.set(False)
+                    for widget in weekday_widgets.values():
+                        widget.configure(state="normal" if enabled else "disabled")
+
+            def clear_month_week_selection(*_):
+                if any(var.get() for var in month_day_vars.values()):
+                    for var in week_vars.values():
+                        var.set(False)
+                        for var in weekday_vars.values():
+                            var.set(False)
+
+            def rebuild(*_):
+                for child in fields.winfo_children():
+                    child.destroy()
+                node_type = type_names.get(type_var.get(), existing.get("type", "interval"))
+                if node_type == "interval":
+                    ttk.Label(fields, text="开始（YYYY-MM-DD HH:MM:SS，留空不限）").grid(row=0, column=0, sticky="w")
+                    ttk.Entry(fields, textvariable=start_var, width=28).grid(row=1, column=0, sticky="w", pady=3)
+                    ttk.Label(fields, text="结束（左闭右开，留空不限）").grid(row=2, column=0, sticky="w")
+                    ttk.Entry(fields, textvariable=end_var, width=28).grid(row=3, column=0, sticky="w", pady=3)
+                elif node_type == "calendar":
+                    ttk.Label(fields, text="周期").grid(row=0, column=0, sticky="w")
+                    ttk.Combobox(fields, textvariable=unit_var, values=("day", "week", "month"), state="readonly", width=12).grid(row=0, column=1, sticky="w")
+
+                    weekday_names = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+                    if unit_var.get() == "week":
+                        ttk.Label(fields, text="星期").grid(row=1, column=0, sticky="w", pady=(6, 2))
+                        weekday_row = ttk.Frame(fields)
+                        weekday_row.grid(row=2, column=0, columnspan=2, sticky="w")
+                        for day, name in enumerate(weekday_names, start=1):
+                            ttk.Checkbutton(weekday_row, text=name, variable=weekday_vars[day]).pack(side="left", padx=(0, 8))
+
+                    if unit_var.get() == "month":
+                        ttk.Label(fields, text="第几周").grid(row=3, column=0, sticky="w", pady=(8, 2))
+                        week_row = ttk.Frame(fields)
+                        week_row.grid(row=4, column=0, columnspan=2, sticky="w")
+                        for week in range(1, 6):
+                            var = week_vars[week]
+                            var.trace_add("write", sync_month_week_selection)
+                            ttk.Checkbutton(week_row, text="第{}周".format(week), variable=var).pack(side="left", padx=(0, 8))
+
+                        ttk.Label(fields, text="周几").grid(row=5, column=0, sticky="w", pady=(8, 2))
+                        weekday_row = ttk.Frame(fields)
+                        weekday_row.grid(row=6, column=0, columnspan=2, sticky="w")
+                        weekday_widgets.clear()
+                        for day, name in enumerate(weekday_names, start=1):
+                            widget = ttk.Checkbutton(
+                                weekday_row,
+                                text=name,
+                                variable=weekday_vars[day],
+                            )
+                            widget.pack(side="left", padx=(0, 8))
+                            weekday_widgets[day] = widget
+
+                        ttk.Label(fields, text="几号").grid(row=7, column=0, sticky="w", pady=(8, 2))
+                        day_row = ttk.Frame(fields)
+                        day_row.grid(row=8, column=0, columnspan=2, sticky="w")
+                        for day in range(1, 32):
+                            var = month_day_vars[day]
+                            var.trace_add("write", clear_month_week_selection)
+                            ttk.Checkbutton(day_row, text=str(day), variable=var).grid(
+                                row=(day - 1) // 8,
+                                column=(day - 1) % 8,
+                                sticky="w",
+                                padx=(0, 8),
+                                pady=1,
+                            )
+                        sync_month_week_selection()
+                elif node_type == "time_window":
+                    ttk.Label(fields, text="开始时刻（HH:MM:SS）").grid(row=0, column=0, sticky="w")
+                    ttk.Entry(fields, textvariable=start_var, width=28).grid(row=1, column=0, sticky="w")
+                    ttk.Label(fields, text="结束时刻（左闭右开）").grid(row=2, column=0, sticky="w")
+                    ttk.Entry(fields, textvariable=end_var, width=28).grid(row=3, column=0, sticky="w")
+                else:
+                    ttk.Label(fields, text="此节点用于组合子节点；∃ 满足任何表示满足其一，∀ 满足所有表示全部生效。").grid(row=0, column=0, sticky="w")
+
+            reverse_types = {value: key for key, value in type_names.items()}
+            type_var.set(reverse_types.get(existing.get("type", "interval"), "时限区间"))
+            type_var.trace_add("write", rebuild)
+            unit_var.trace_add("write", rebuild)
+            rebuild()
+
+            def accept():
+                node_type = type_names.get(type_var.get(), "interval")
+                children = copy.deepcopy(existing.get("children", []))
+                node = {"type": node_type, "children": children}
+                if node_type == "interval":
+                    node["start"] = start_var.get().strip() or None
+                    node["end"] = end_var.get().strip() or None
+                    if node["start"] is not None and parse_datetime(node["start"]) is None:
+                        messagebox.showwarning("输入无效", "开始时刻格式应为 YYYY-MM-DD HH:MM:SS", parent=d)
+                        return
+                    if node["end"] is not None and parse_datetime(node["end"]) is None:
+                        messagebox.showwarning("输入无效", "结束时刻格式应为 YYYY-MM-DD HH:MM:SS", parent=d)
+                        return
+                elif node_type == "calendar":
+                    node.update(unit=unit_var.get())
+                    selectors = {}
+                    weekdays = [day for day, var in weekday_vars.items() if var.get()]
+                    month_days = [day for day, var in month_day_vars.items() if var.get()]
+                    weeks = [week for week, var in week_vars.items() if var.get()]
+                    if unit_var.get() == "month" and not weeks:
+                        weekdays = []
+                    if weekdays:
+                        selectors["weekdays"] = weekdays
+                    if month_days:
+                        selectors["month_days"] = month_days
+                    if weeks:
+                        selectors["week_of_month"] = weeks
+                    node["selectors"] = selectors
+                elif node_type == "time_window":
+                    node["start"] = start_var.get().strip() or "00:00:00"
+                    node["end"] = end_var.get().strip() or "24:00:00"
+                    if node["start"] != "24:00:00" and parse_time(node["start"]) is None:
+                        messagebox.showwarning("输入无效", "开始时刻格式应为 HH:MM:SS", parent=d)
+                        return
+                    if node["end"] != "24:00:00" and parse_time(node["end"]) is None:
+                        messagebox.showwarning("输入无效", "结束时刻格式应为 HH:MM:SS", parent=d)
+                        return
+                    if node["start"] != "24:00:00" and node["end"] != "24:00:00":
+                        if parse_time(node["end"]) <= parse_time(node["start"]):
+                            messagebox.showwarning("输入无效", "结束时刻必须晚于开始时刻", parent=d)
+                            return
+                d.destroy()
+                existing.clear()
+                existing.update(node)
+                if on_changed is not None:
+                    on_changed()
+
+            ttk.Button(f, text="确定", command=accept).grid(row=2, column=1, sticky="e", pady=(10, 0))
+            ttk.Button(f, text="取消", command=d.destroy).grid(row=2, column=0, sticky="w", pady=(10, 0))
+            set_window_size_percent(d, 32, 55)
+            place_window_bottom_right(d)
+
+        def selected_node():
+            selection = tree.selection()
+            if not selection:
+                return None, None
+            path = selection[0]
+            return path, get_node(path)
+
+        def add_child():
+            path, parent = selected_node()
+            if parent is None:
+                return
+            node = {"type": "interval", "start": None, "end": None, "children": []}
+            def changed():
+                parent.setdefault("children", []).append(node)
+                redraw()
+            edit_node(node, create=True, on_changed=changed)
+
+        def edit_selected():
+            path, node = selected_node()
+            if node is not None:
+                edit_node(node, on_changed=redraw)
+
+        def delete_selected():
+            path, node = selected_node()
+            if path is None or path == "0":
+                messagebox.showwarning("无法删除", "根节点不能删除，可以编辑根节点类型。", parent=window)
+                return
+            parent, index = get_parent(path)
+            del parent["children"][index]
+            redraw()
+
+        bar = ttk.Frame(frame)
+        bar.pack(fill="x")
+        ttk.Button(bar, text="编辑节点", command=edit_selected).pack(side="left")
+        ttk.Button(bar, text="添加子节点", command=add_child).pack(side="left", padx=6)
+        ttk.Button(bar, text="删除节点", command=delete_selected).pack(side="left")
+
+        def confirm():
+            if schedule_target is not None:
+                schedule_target.clear()
+                schedule_target.update(copy.deepcopy(schedule))
+            if on_confirm is not None:
+                on_confirm()
+            window.destroy()
+
+        ttk.Button(bar, text="确定", command=confirm).pack(side="right")
+        redraw()
+        set_window_size_percent(window, 38, 55)
+        place_window_bottom_right(window)
 
     def add_assignment(self):
         subject = self.selected_subject.get()
@@ -1018,7 +1440,8 @@ class editor:
             return
         index = selection[0]
         assignment = self.assignment[subject][index]
-        if assignment.get("schedule_rules"):
+        schedule = assignment.get("schedule")
+        if isinstance(schedule, dict) and schedule.get("enabled", True):
             return
         self._record_undo()
         assignment["hide"] = not assignment["hide"]
@@ -1036,7 +1459,8 @@ class editor:
         self._record_undo()
         now = datetime.now().isoformat(timespec="seconds")
         for assignment in assignments:
-            if assignment.get("schedule_rules"):
+            schedule = assignment.get("schedule")
+            if isinstance(schedule, dict) and schedule.get("enabled", True):
                 continue
             if assignment["hide"] != (not show_all):
                 assignment["hide"] = not show_all

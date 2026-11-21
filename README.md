@@ -1,4 +1,4 @@
-# Homework Manager v1.6 Beta 2
+# Homework Manager v1.6 Beta 3
 适用于信息化教学的简单作业显示工具 / 
 A simple homework display tool for digital teaching
 

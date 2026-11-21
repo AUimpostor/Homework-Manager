@@ -33,7 +33,18 @@ from tkinter import messagebox, ttk
 
 from PIL import Image, ImageDraw
 
-from config import data_directory, default_document, initialize_data_directory, load_config, save_config, load_assignment_data, save_assignment_data
+from config import (
+    backup_directory,
+    data_directory,
+    default_document,
+    initialize_data_directory,
+    initialize_custom_params,
+    load_config,
+    load_assignment_data,
+    next_backup_path,
+    save_config,
+    save_assignment_data,
+)
 from runtime import (
     close_main_control_events,
     configure_tk_scaling,
@@ -79,12 +90,9 @@ def create_assignment_backup(assignment_file, backup_dir):
     """
     backup_dir.mkdir(parents=True, exist_ok=True)
     if assignment_file.is_file():
-        timestamp = datetime.now().strftime("%Y%m%d_%H")
-        backup_file = backup_dir / "assignment_{}.json.bak".format(timestamp)
-        suffix = 1
-        while backup_file.exists():
-            backup_file = backup_dir / "assignment_{}_{}.json.bak".format(timestamp, suffix)
-            suffix += 1
+        backup_file = next_backup_path(
+            backup_dir, ".json.bak", automatic=True
+        )
         shutil.copy2(assignment_file, backup_file)
         return False
     show_windows_notification("活跃的作业文件意外丢失\n已将作业文件重置为空", "备份时出现错误")
@@ -102,7 +110,9 @@ def reset_assignment_if_new_day():
 
     if previous is not None and previous < today:
         assignment_file = DATA_DIR / "assignment.json"
-        assignment_missing = create_assignment_backup(assignment_file, DATA_DIR / "backup")
+        assignment_missing = create_assignment_backup(
+            assignment_file, backup_directory(RESOURCE_DIR, "assignment")
+        )
 
         assignment = load_assignment_data(assignment_file, CONFIG_FILE)
         for subject in assignment:
@@ -314,6 +324,7 @@ def show_school_class_prompt():
         config["class"] = class_name
         try:
             save_config(CONFIG_FILE, config)
+            initialize_custom_params(RESOURCE_DIR)
             assignment_file = DATA_DIR / "assignment.json"
             if not assignment_file.is_file():
                 save_assignment_data(assignment_file, default_document()[1]["data"])
@@ -498,7 +509,16 @@ def run_entry_point():
         }
         if component not in component_modules:
             raise ValueError("未知组件: {}".format(component))
-        importlib.import_module(component_modules[component]).main()
+        module = importlib.import_module(component_modules[component])
+        if component == "dashboard":
+            backup_type = None
+            if "--backup-type" in sys.argv:
+                index = sys.argv.index("--backup-type")
+                if index + 1 < len(sys.argv):
+                    backup_type = sys.argv[index + 1]
+            module.main(backup_type)
+        else:
+            module.main()
     else:
         main()
 
